@@ -197,36 +197,14 @@ def run():
         dim=1,
     )
     
-    # For norm-preserving abliteration, we need to apply projection during measurement
-    # when the --projected flag would be used in the original implementation
+    # For norm-preserving abliteration, we use the basic refusal directions
+    # The biprojection will be applied during abliteration onto target layer's harmless direction
     if settings.use_norm_preserving_abliteration:
-        print("* Computing projected refusal directions during measurement...")
-        # Apply projection during measurement as in the original --projected flag
-        projected_directions = []
-        for layer_idx in range(initial_refusal_directions.shape[0]):
-            harmful_layer = bad_residuals.mean(dim=0)[layer_idx]
-            harmless_layer = good_residuals.mean(dim=0)[layer_idx]
-            
-            # Initial refusal direction
-            refusal_dir = harmful_layer - harmless_layer
-            
-            # Apply Gram-Schmidt orthogonalization (project out harmless direction)
-            # Normalize harmless direction to avoid numerical issues
-            harmless_normalized = F.normalize(harmless_layer.float(), dim=0)
-            
-            # Project and subtract contribution along harmless direction
-            projection_scalar = torch.dot(refusal_dir, harmless_normalized)
-            
-            # Resulting refusal direction should minimize impact along harmless direction
-            refusal_dir = refusal_dir - projection_scalar * harmless_normalized
-            
-            # Normalize the final direction
-            refusal_dir = F.normalize(refusal_dir, dim=0)
-            
-            projected_directions.append(refusal_dir)
-        
-        refusal_directions = torch.stack(projected_directions)
-        print("* Projected directions computed successfully during measurement")
+        print("* Computing refusal directions for biprojected abliteration...")
+        # For biprojected abliteration, we use the basic refusal directions without projection
+        # The projection will happen during abliteration onto target layer's harmless direction
+        refusal_directions = initial_refusal_directions
+        print("* Basic refusal directions computed successfully")
     else:
         refusal_directions = initial_refusal_directions
 
