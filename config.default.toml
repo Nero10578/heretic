@@ -23,6 +23,10 @@ torchao_group_size = 128
 # Include embedding layers in torchao quantization.
 torchao_include_embedding = false
 
+# Abliterate the quantized model directly in GPU memory instead of loading full precision model to CPU.
+# Faster but may have precision issues.
+abliterate_quantized_inplace = false
+
 # List of PyTorch dtypes to try when loading model tensors.
 # If loading with a dtype fails, the next dtype in the list will be tried.
 # Note: When using quantization (4-bit/8-bit), this setting is ignored.

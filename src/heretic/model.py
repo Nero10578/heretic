@@ -320,76 +320,92 @@ class Model:
     ):
         # Apply abliteration
         if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
-            # For quantized models, load full precision model, apply abliteration, then quantize
-            import tempfile
-            import os
-            
-            # Clear current model from VRAM before loading full precision model
-            self.model = None
-            
-            # Aggressive memory cleanup
-            empty_cache()
-            
-            # Load full precision model to CPU RAM with memory optimizations
-            full_model = AutoModelForCausalLM.from_pretrained(
-                self.settings.model,
-                torch_dtype=torch.bfloat16,
-                device_map="cpu",
-                low_cpu_mem_usage=True,  # Enable to reduce memory usage
-            )
-            
-            # Apply abliteration to full precision model
-            self._apply_abliteration_to_model(full_model, refusal_directions, direction_index, parameters)
-            
-            # Save the abliterated full precision model to a temporary location
-            temp_dir = tempfile.mkdtemp()
-            temp_model_path = os.path.join(temp_dir, "temp_model")
-            
-            try:
-                # Save with memory-efficient options
-                full_model.save_pretrained(
-                    temp_model_path,
-                    safe_serialization=False,  # torchao requires safe_serialization=False
-                    max_shard_size="2GB",  # Split into smaller shards to reduce memory pressure
-                )
-                
-                # Clean up the full model BEFORE loading the quantized version
-                del full_model
-                full_model = None
-                empty_cache()
-                
-                # Load the abliterated model with quantization
-                if self.settings.use_torchao:
-                    # Load with torchao quantization
-                    quantization_config = self._create_torchao_config()
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        temp_model_path,
-                        quantization_config=quantization_config,
-                        device_map=self.settings.device_map,
-                        torch_dtype="auto",
-                        low_cpu_mem_usage=True,  # Enable to reduce memory usage
-                    )
-                else:
-                    # Load with bitsandbytes quantization
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        temp_model_path,
-                        load_in_4bit=self.settings.load_in_4bit,
-                        load_in_8bit=self.settings.load_in_8bit,
-                        device_map=self.settings.device_map,
-                        torch_dtype=torch.bfloat16,
-                        bnb_4bit_compute_dtype=torch.bfloat16,
-                        low_cpu_mem_usage=True,  # Enable to reduce memory usage
-                    )
-            finally:
-                # Ensure temporary directory is always cleaned up
-                import shutil
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            
-            # Final cleanup
-            empty_cache()
+            # Check if we should abliterate quantized model in-place (faster)
+            if self.settings.abliterate_quantized_inplace:
+                print("* Abliterating quantized model in-place (faster but less precise)... ", end="")
+                try:
+                    # Apply abliteration directly to the quantized model
+                    self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
+                    print("[green]Ok[/]")
+                except Exception as error:
+                    print(f"[red]Failed[/] ({error})")
+                    print("* Falling back to CPU-based abliteration...")
+                    self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
+            else:
+                # Default: load full precision model, apply abliteration, then quantize
+                self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
         else:
             # For non-quantized models, apply abliteration directly
             self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
+
+    def _abliterate_via_cpu(self, refusal_directions: Tensor, direction_index: float | None, parameters: dict[str, AbliterationParameters]):
+        """Abliterate by loading full precision model to CPU, applying changes, then re-quantizing."""
+        import tempfile
+        import os
+        
+        # Clear current model from VRAM before loading full precision model
+        self.model = None
+        
+        # Aggressive memory cleanup
+        empty_cache()
+        
+        # Load full precision model to CPU RAM with memory optimizations
+        full_model = AutoModelForCausalLM.from_pretrained(
+            self.settings.model,
+            torch_dtype=torch.bfloat16,
+            device_map="cpu",
+            low_cpu_mem_usage=True,  # Enable to reduce memory usage
+        )
+        
+        # Apply abliteration to full precision model
+        self._apply_abliteration_to_model(full_model, refusal_directions, direction_index, parameters)
+        
+        # Save the abliterated full precision model to a temporary location
+        temp_dir = tempfile.mkdtemp()
+        temp_model_path = os.path.join(temp_dir, "temp_model")
+        
+        try:
+            # Save with memory-efficient options
+            full_model.save_pretrained(
+                temp_model_path,
+                safe_serialization=False,  # torchao requires safe_serialization=False
+                max_shard_size="2GB",  # Split into smaller shards to reduce memory pressure
+            )
+            
+            # Clean up the full model BEFORE loading the quantized version
+            del full_model
+            full_model = None
+            empty_cache()
+            
+            # Load the abliterated model with quantization
+            if self.settings.use_torchao:
+                # Load with torchao quantization
+                quantization_config = self._create_torchao_config()
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    temp_model_path,
+                    quantization_config=quantization_config,
+                    device_map=self.settings.device_map,
+                    torch_dtype="auto",
+                    low_cpu_mem_usage=True,  # Enable to reduce memory usage
+                )
+            else:
+                # Load with bitsandbytes quantization
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    temp_model_path,
+                    load_in_4bit=self.settings.load_in_4bit,
+                    load_in_8bit=self.settings.load_in_8bit,
+                    device_map=self.settings.device_map,
+                    torch_dtype=torch.bfloat16,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    low_cpu_mem_usage=True,  # Enable to reduce memory usage
+                )
+        finally:
+            # Ensure temporary directory is always cleaned up
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        
+        # Final cleanup
+        empty_cache()
 
     def load_quantized_model(self):
         """Load the quantized model from the original model (for original model selection)"""

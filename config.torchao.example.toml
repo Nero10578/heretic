@@ -15,6 +15,10 @@ torchao_group_size = 128
 # Include embedding layers in torchao quantization
 torchao_include_embedding = false
 
+# Abliterate quantized model directly in GPU memory instead of loading full precision model to CPU.
+# Faster but may have precision issues.
+abliterate_quantized_inplace = false
+
 # Model to use
 model = "meta-llama/Llama-3.1-8B-Instruct"
 

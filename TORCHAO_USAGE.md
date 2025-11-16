@@ -117,7 +117,20 @@ torchao_quant_type = "int4_weight_only"
 torchao_group_size = 128
 device_map = "cpu"
 torchao_include_embedding = false
+abliterate_quantized_inplace = false
 ```
+
+### For Fast GPU Abliteration (In-place)
+
+```toml
+use_torchao = true
+torchao_quant_type = "int4_weight_only"
+torchao_group_size = 128
+torchao_include_embedding = false
+abliterate_quantized_inplace = true
+```
+
+**Note**: In-place abliteration is faster but may have precision issues. It works directly on the quantized model in GPU memory without loading the full precision model to CPU. For best results, use the default CPU-based abliteration.
 
 ## Usage
 
