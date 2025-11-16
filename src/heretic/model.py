@@ -209,7 +209,7 @@ class Model:
     ):
         # Apply abliteration to the full precision model
         if self.full_precision_model is not None:
-            self._abliterate_impl(self.full_precision_model, refusal_directions, direction_index, parameters)
+            self._apply_abliteration_to_model(self.full_precision_model, refusal_directions, direction_index, parameters)
             
             # If using quantization, quantize the abliterated model and replace the quantized model
             if self.settings.load_in_4bit or self.settings.load_in_8bit:
