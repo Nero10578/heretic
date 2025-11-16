@@ -333,52 +333,11 @@ class Model:
         # Call empty_cache for comprehensive cleanup
         empty_cache()
 
-        # Check if torchao quantization is requested
-        if self.settings.use_torchao:
-            # If in-place abliteration is enabled, reload the quantized model
-            if self.settings.abliterate_quantized_inplace:
-                print("* Reloading quantized model for in-place abliteration... ", end="")
-                try:
-                    quantization_config = self._create_torchao_config()
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        self.settings.model,
-                        quantization_config=quantization_config,
-                        device_map=self.settings.device_map,
-                        torch_dtype="auto",
-                        low_cpu_mem_usage=True,
-                    )
-                    print("[green]Ok[/]")
-                except Exception as error:
-                    print(f"[red]Failed[/] ({error})")
-                    self.model = None
-            else:
-                # Don't load quantized model here - it will be loaded in abliterate()
-                # from the full precision model in CPU RAM
-                pass
-        # Check if bitsandbytes quantization is requested
-        elif self.settings.load_in_4bit or self.settings.load_in_8bit:
-            # If in-place abliteration is enabled, reload the quantized model
-            if self.settings.abliterate_quantized_inplace:
-                print("* Reloading quantized model for in-place abliteration... ", end="")
-                try:
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        self.settings.model,
-                        load_in_4bit=self.settings.load_in_4bit,
-                        load_in_8bit=self.settings.load_in_8bit,
-                        device_map=self.settings.device_map,
-                        torch_dtype=torch.bfloat16,
-                        bnb_4bit_compute_dtype=torch.bfloat16,
-                        low_cpu_mem_usage=True,
-                    )
-                    print("[green]Ok[/]")
-                except Exception as error:
-                    print(f"[red]Failed[/] ({error})")
-                    self.model = None
-            else:
-                # Don't load quantized model here - it will be loaded in abliterate()
-                # from the full precision model in CPU RAM
-                pass
+        # For all models, we use on-the-fly abliteration which doesn't require model reloading
+        if self.model is not None:
+            print("* Model already loaded - using on-the-fly abliteration, no reload needed")
         else:
+            # Only reload if model is None (initial load or after explicit clearing)
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.settings.model,
                 dtype=dtype,
@@ -454,32 +413,29 @@ class Model:
         direction_index: float | None,
         parameters: dict[str, AbliterationParameters],
     ):
-        # Apply abliteration
-        if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
-            # Check if we should abliterate quantized model in-place (faster)
-            if self.settings.abliterate_quantized_inplace:
-                print("* Using on-the-fly abliteration for quantized model (fast and compatible)... ", end="")
-                try:
-                    # Store abliteration parameters for on-the-fly application
-                    self.abliteration_params = {
-                        'refusal_directions': refusal_directions,
-                        'direction_index': direction_index,
-                        'parameters': parameters
-                    }
-                    print("[green]Ok[/]")
-                    print("* Note: Final model will still be saved from CPU-based abliteration for best quality")
-                    # Still run CPU-based abliteration to save the final model
-                    self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
-                except Exception as error:
-                    print(f"[red]Failed[/] ({error})")
-                    print("* Falling back to CPU-based abliteration...")
-                    self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
-            else:
-                # Default: load full precision model, apply abliteration, then quantize
+        # Apply abliteration using on-the-fly approach for all models
+        print("* Using on-the-fly abliteration (fast and compatible)... ", end="")
+        try:
+            # Store abliteration parameters for on-the-fly application
+            self.abliteration_params = {
+                'refusal_directions': refusal_directions,
+                'direction_index': direction_index,
+                'parameters': parameters
+            }
+            print("[green]Ok[/]")
+            print("* No model reloading needed for subsequent trials - using on-the-fly transformation")
+            
+            # For quantized models, run CPU-based abliteration for final model saving
+            # For unquantized models, apply abliteration directly to weights in VRAM
+            if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
                 self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
-        else:
-            # For non-quantized models, apply abliteration directly
-            self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
+            else:
+                print("* Applying abliteration directly to model weights in VRAM...")
+                self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
+        except Exception as error:
+            print(f"[red]Failed[/] ({error})")
+            print("* Falling back to CPU-based abliteration...")
+            self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
 
     def _abliterate_via_cpu(self, refusal_directions: Tensor, direction_index: float | None, parameters: dict[str, AbliterationParameters]):
         """Abliterate by loading full precision model to CPU, applying changes, then re-quantizing."""
@@ -768,10 +724,8 @@ class Model:
             return_token_type_ids=False,
         ).to(self.model.device)
 
-        # Apply on-the-fly abliteration if enabled and parameters are available
-        if self.abliteration_params is not None and (
-            self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit
-        ):
+        # Apply on-the-fly abliteration if parameters are available
+        if self.abliteration_params is not None:
             with AbliterationHook(
                 self,
                 self.abliteration_params['refusal_directions'],

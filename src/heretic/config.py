@@ -59,10 +59,6 @@ class Settings(BaseSettings):
         description="Include embedding layers in torchao quantization.",
     )
 
-    abliterate_quantized_inplace: bool = Field(
-        default=False,
-        description="Abliterate the quantized model directly in GPU memory instead of loading full precision model to CPU. Faster but may have precision issues.",
-    )
 
     dtypes: list[str] = Field(
         default=[
