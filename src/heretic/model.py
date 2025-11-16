@@ -499,13 +499,6 @@ class Model:
             }
             print("[green]Ok[/]")
             print("* No model reloading needed for subsequent trials - using on-the-fly transformation")
-            
-            # For all models, NEVER modify weights during trials - only use on-the-fly transformation
-            # Only apply direct weight modification when user selects a trial for final use
-            if self.settings.use_norm_preserving_abliteration:
-                print("* Using on-the-fly norm-preserving abliteration for trials (no weight modification)...")
-            else:
-                print("* Using on-the-fly standard abliteration for trials (no weight modification)...")
             # Store parameters for on-the-fly application only
         except Exception as error:
             print(f"[red]Failed[/] ({error})")

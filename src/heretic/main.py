@@ -292,10 +292,6 @@ def run():
         print("* Using on-the-fly abliteration - no model reload needed")
             
         print("* Abliterating...")
-        if settings.use_norm_preserving_abliteration:
-            print(f"* Using norm-preserving biprojected abliteration (scale factor: {settings.abliteration_scale_factor})")
-        else:
-            print("* Using standard abliteration")
         model.abliterate(refusal_directions, direction_index, parameters)
         print_memory_usage("After abliteration: ")
         print("* Evaluating...")
