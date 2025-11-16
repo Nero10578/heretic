@@ -48,11 +48,23 @@ class Model:
             self.tokenizer.padding_side = "left"
 
         self.model = None
+        self.full_precision_model = None  # Store reference to full precision model
 
         # Check if quantization is requested
         if settings.load_in_4bit or settings.load_in_8bit:
-            print(f"* Loading model in {'4-bit' if settings.load_in_4bit else '8-bit'} precision... ", end="")
+            print(f"* Loading full precision model to CPU for abliteration... ", end="")
             try:
+                # First load full precision model to CPU for abliteration
+                self.full_precision_model = AutoModelForCausalLM.from_pretrained(
+                    settings.model,
+                    torch_dtype=torch.bfloat16,
+                    device_map="cpu",
+                    low_cpu_mem_usage=False,
+                )
+                print("[green]Ok[/]")
+                
+                print(f"* Loading model in {'4-bit' if settings.load_in_4bit else '8-bit'} precision for optimization... ", end="")
+                # Then load quantized model for optimization
                 self.model = AutoModelForCausalLM.from_pretrained(
                     settings.model,
                     load_in_4bit=settings.load_in_4bit,
@@ -83,6 +95,8 @@ class Model:
                         dtype=dtype,
                         device_map=settings.device_map,
                     )
+                    # Store reference to full precision model
+                    self.full_precision_model = self.model
 
                     # A test run can reveal dtype-related problems such as the infamous
                     # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
@@ -114,6 +128,7 @@ class Model:
 
         # Check if quantization is requested
         if self.settings.load_in_4bit or self.settings.load_in_8bit:
+            # Reload quantized model for optimization
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.settings.model,
                 load_in_4bit=self.settings.load_in_4bit,
@@ -129,6 +144,8 @@ class Model:
                 dtype=dtype,
                 device_map=self.settings.device_map,
             )
+            # Update reference to full precision model
+            self.full_precision_model = self.model
 
     def get_layers(self) -> ModuleList:
         # Most multimodal models.
@@ -190,7 +207,32 @@ class Model:
         direction_index: float | None,
         parameters: dict[str, AbliterationParameters],
     ):
-        self._abliterate_impl(refusal_directions, direction_index, parameters)
+        # Apply abliteration to the full precision model
+        if self.full_precision_model is not None:
+            self._abliterate_impl(self.full_precision_model, refusal_directions, direction_index, parameters)
+            
+            # If using quantization, quantize the abliterated model and replace the quantized model
+            if self.settings.load_in_4bit or self.settings.load_in_8bit:
+                # Save the abliterated full precision model to a temporary location
+                import tempfile
+                import os
+                temp_dir = tempfile.mkdtemp()
+                temp_model_path = os.path.join(temp_dir, "temp_model")
+                self.full_precision_model.save_pretrained(temp_model_path)
+                
+                # Load the abliterated model with quantization
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    temp_model_path,
+                    load_in_4bit=self.settings.load_in_4bit,
+                    load_in_8bit=self.settings.load_in_8bit,
+                    device_map=self.settings.device_map,
+                    torch_dtype=torch.bfloat16,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                )
+                
+                # Clean up temporary directory
+                import shutil
+                shutil.rmtree(temp_dir)
 
     def _abliterate_impl(
         self,
@@ -250,13 +292,39 @@ class Model:
                     # Ensure projector is on the same device as the matrix
                     projector_device = projector.to(matrix.device)
                     
-                    # Skip quantized matrices during abliteration
-                    # The quantized model will be used for optimization but
-                    # full precision version will be created during save
+                    # Apply abliteration to both quantized and non-quantized matrices
                     if hasattr(matrix, 'bnb_quantized') and matrix.bnb_quantized:
-                        # For 4-bit quantized weights, skip modification during optimization
-                        # The abliteration will be applied to the full precision model during save
-                        continue
+                        # For 4-bit quantized weights, we need to work with the quantized representation
+                        # but avoid the matrix multiplication that causes shape mismatch
+                        
+                        # Get the quantized weight data
+                        quant_state = matrix.state()
+                        
+                        # Dequantize to get the actual weight values
+                        weight_data = quant_state['weight'].dequantize()
+                        
+                        # Calculate the projection in the dequantized space
+                        projection = weight * (projector_device @ weight_data)
+                        
+                        # Apply the abliteration by subtracting the projection
+                        modified_weight = weight_data - projection
+                        
+                        # Now we need to re-quantize the modified weights
+                        # But we'll do this by updating the quantized state directly
+                        # to avoid the matrix multiplication issue
+                        
+                        # Create a new quantized state with the modified weights
+                        new_quant_state = quant_state.copy()
+                        new_quant_state['weight'] = modified_weight
+                        
+                        # Update the matrix with the new quantized weights
+                        with torch.no_grad():
+                            matrix._parameters['weight'].copy_(new_quant_state['weight'])
+                            # Update other quantization parameters if needed
+                            if 'absmax' in new_quant_state:
+                                matrix._parameters['absmax'].copy_(new_quant_state['absmax'])
+                            if 'quant_state' in new_quant_state:
+                                matrix._parameters['quant_state'].copy_(new_quant_state['quant_state'])
                     else:
                         # For regular (non-quantized) weights, use the original approach
                         # In-place subtraction is safe as we're not using Autograd.
