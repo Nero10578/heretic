@@ -475,34 +475,20 @@ class Model:
                 safe_serialization=False,  # torchao requires safe_serialization=False
                 max_shard_size="2GB",  # Split into smaller shards to reduce memory pressure
             )
-            
-            # Clean up the full model BEFORE loading the quantized version
+           
+            # Clean up the full model BEFORE loading the final model
             del full_model
             full_model = None
             empty_cache()
-            
-            # Load the abliterated model with quantization
-            if self.settings.use_torchao:
-                # Load with torchao quantization
-                quantization_config = self._create_torchao_config()
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    temp_model_path,
-                    quantization_config=quantization_config,
-                    device_map=self.settings.device_map,
-                    torch_dtype="auto",
-                    low_cpu_mem_usage=True,  # Enable to reduce memory usage
-                )
-            else:
-                # Load with bitsandbytes quantization
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    temp_model_path,
-                    load_in_4bit=self.settings.load_in_4bit,
-                    load_in_8bit=self.settings.load_in_8bit,
-                    device_map=self.settings.device_map,
-                    torch_dtype=torch.bfloat16,
-                    bnb_4bit_compute_dtype=torch.bfloat16,
-                    low_cpu_mem_usage=True,  # Enable to reduce memory usage
-                )
+           
+            # Load the abliterated model WITHOUT quantization (save as full precision)
+            print("* Loading final abliterated model (full precision)...")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                temp_model_path,
+                torch_dtype=torch.bfloat16,
+                device_map=self.settings.device_map,
+                low_cpu_mem_usage=True,  # Enable to reduce memory usage
+            )
         finally:
             # Ensure temporary directory is always cleaned up
             import shutil
