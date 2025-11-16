@@ -197,13 +197,13 @@ def run():
         dim=1,
     )
     
-    # Apply biprojection if norm-preserving abliteration is enabled
+    # Apply projection if norm-preserving abliteration is enabled
     if settings.use_norm_preserving_abliteration:
-        print("* Computing biprojected refusal directions...")
-        refusal_directions = model.compute_biprojected_directions(
+        print("* Computing projected refusal directions (Gram-Schmidt orthogonalization)...")
+        refusal_directions = model.compute_projected_directions(
             initial_refusal_directions, good_residuals, bad_residuals
         )
-        print("* Biprojected directions computed successfully")
+        print("* Projected directions computed successfully")
     else:
         refusal_directions = initial_refusal_directions
 
@@ -442,7 +442,7 @@ def run():
                          
                         # Apply final abliteration for saving
                         if settings.use_norm_preserving_abliteration:
-                            print(f"* Applying norm-preserving biprojected abliteration (scale factor: {settings.abliteration_scale_factor})")
+                            print(f"* Applying norm-preserving projected abliteration (scale factor: {settings.abliteration_scale_factor})")
                         else:
                             print("* Applying standard abliteration")
                         model.apply_final_abliteration(
@@ -493,7 +493,7 @@ def run():
                          
                         # Apply final abliteration for saving
                         if settings.use_norm_preserving_abliteration:
-                            print(f"* Applying norm-preserving biprojected abliteration (scale factor: {settings.abliteration_scale_factor})")
+                            print(f"* Applying norm-preserving projected abliteration (scale factor: {settings.abliteration_scale_factor})")
                         else:
                             print("* Applying standard abliteration")
                         model.apply_final_abliteration(

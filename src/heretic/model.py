@@ -191,6 +191,25 @@ class AbliterationHook:
             return output
         
         return hook_fn
+    
+    def _apply_norm_preserving_to_output(self, output: torch.Tensor, refusal_normalized: torch.Tensor, scale_factor: float) -> torch.Tensor:
+        """Apply norm-preserving transformation to output activations."""
+        # Compute projection onto refusal direction
+        projection_coeffs = torch.matmul(output, refusal_normalized)
+        projection = torch.outer(projection_coeffs, refusal_normalized)
+        
+        # Apply norm-preserving transformation
+        output_directional = output - scale_factor * projection
+        output_norms = torch.norm(output, dim=-1, keepdim=True)
+        output_directional_norms = torch.norm(output_directional, dim=-1, keepdim=True)
+        
+        # Avoid division by zero
+        output_directional_norms = torch.clamp(output_directional_norms, min=1e-8)
+        
+        # Preserve original norms
+        output_preserved = output_directional * (output_norms / output_directional_norms)
+        
+        return output_preserved
 
 
 class Model:
@@ -508,7 +527,7 @@ class Model:
     def apply_final_abliteration(self, refusal_directions: Tensor, direction_index: float | None, parameters: dict[str, AbliterationParameters]):
         """Apply abliteration to model weights for final use (saving only)."""
         if self.settings.use_norm_preserving_abliteration:
-            print(f"* Applying final norm-preserving biprojected abliteration (scale factor: {self.settings.abliteration_scale_factor})")
+            print(f"* Applying final norm-preserving projected abliteration (scale factor: {self.settings.abliteration_scale_factor})")
         else:
             print("* Applying final standard abliteration to model weights for saving...")
             
@@ -622,46 +641,37 @@ class Model:
             import shutil
             shutil.rmtree(temp_dir)
 
-    def compute_biprojected_directions(self, refusal_directions: Tensor, good_residuals: Tensor, bad_residuals: Tensor) -> Tensor:
-        """Compute biprojected refusal directions as described in the paper."""
+    def compute_projected_directions(self, refusal_directions: Tensor, good_residuals: Tensor, bad_residuals: Tensor) -> Tensor:
+        """Compute projected refusal directions using Gram-Schmidt orthogonalization as in the original implementation."""
         # Compute mean directions for harmful and harmless
         harmful_mean = bad_residuals.mean(dim=0)
         harmless_mean = good_residuals.mean(dim=0)
         
-        # Initial refusal direction
-        refusal_direction = harmful_mean - harmless_mean
-        
-        # Normalize the refusal direction
-        refusal_normalized = F.normalize(refusal_direction, p=2, dim=1)
-        
-        biprojected_directions = []
+        projected_directions = []
         
         for layer_idx in range(refusal_directions.shape[0]):
-            # Get the current layer's refusal direction
-            layer_refusal_dir = refusal_directions[layer_idx]
+            harmful_layer = harmful_mean[layer_idx]
+            harmless_layer = harmless_mean[layer_idx]
             
-            # Project onto the previous layer's direction (if not the first layer)
-            if layer_idx > 0:
-                prev_dir = refusal_directions[layer_idx - 1]
-                # Compute projection coefficient
-                proj_coeff = torch.dot(layer_refusal_dir, prev_dir) / torch.dot(prev_dir, prev_dir)
-                # Remove the component along previous direction
-                layer_refusal_dir = layer_refusal_dir - proj_coeff * prev_dir
+            # Initial refusal direction
+            refusal_dir = harmful_layer - harmless_layer
             
-            # Project onto the next layer's direction (if not the last layer)
-            if layer_idx < refusal_directions.shape[0] - 1:
-                next_dir = refusal_directions[layer_idx + 1]
-                # Compute projection coefficient
-                proj_coeff = torch.dot(layer_refusal_dir, next_dir) / torch.dot(next_dir, next_dir)
-                # Remove the component along next direction
-                layer_refusal_dir = layer_refusal_dir - proj_coeff * next_dir
+            # Apply Gram-Schmidt orthogonalization (project out harmless direction)
+            # Normalize harmless direction to avoid numerical issues
+            harmless_normalized = F.normalize(harmless_layer.float(), dim=0)
             
-            # Renormalize after biprojection
-            layer_refusal_dir = F.normalize(layer_refusal_dir, p=2, dim=0)
+            # Project and subtract contribution along harmless direction
+            projection_scalar = torch.dot(refusal_dir, harmless_normalized)
             
-            biprojected_directions.append(layer_refusal_dir)
+            # Resulting refusal direction should minimize impact along harmless direction
+            refusal_dir = refusal_dir - projection_scalar * harmless_normalized
+            
+            # Normalize the final direction
+            refusal_dir = F.normalize(refusal_dir, dim=0)
+            
+            projected_directions.append(refusal_dir)
         
-        return torch.stack(biprojected_directions)
+        return torch.stack(projected_directions)
 
     def _norm_preserving_abliterate_impl(
         self,
@@ -669,7 +679,7 @@ class Model:
         direction_index: float | None,
         parameters: dict[str, AbliterationParameters],
     ):
-        """Implement norm-preserving biprojected abliteration algorithm."""
+        """Implement norm-preserving abliteration algorithm matching the original implementation."""
         scale_factor = self.settings.abliteration_scale_factor
         
         if direction_index is None:
@@ -711,63 +721,11 @@ class Model:
                 else:
                     layer_refusal_direction = refusal_direction
 
-                # Normalize refusal direction
-                refusal_normalized = F.normalize(layer_refusal_direction, dim=0)
-
                 for matrix in matrices:
-                    # Ensure we're working with the right dtype and device
-                    matrix_device = matrix.device
-                    matrix_dtype = matrix.dtype
-                    
-                    # Handle quantized matrices by dequantizing first
-                    if hasattr(matrix, 'bnb_quantized') and matrix.bnb_quantized:
-                        # For bitsandbytes 4-bit quantized weights
-                        if hasattr(matrix, 'quant_state'):
-                            quant_state = matrix.quant_state()
-                            weight_data = quant_state['weight'].dequantize()
-                        elif hasattr(matrix, 'dequantize'):
-                            weight_data = matrix.dequantize()
-                        elif hasattr(matrix, 'weight') and hasattr(matrix.weight, 'dequantize'):
-                            weight_data = matrix.weight.dequantize()
-                        else:
-                            print(f"* Warning: Cannot dequantize matrix of type {type(matrix)}, skipping...")
-                            continue
-                    elif hasattr(matrix, '_data_impl') and hasattr(matrix._data_impl, '_value'):
-                        # For torchao quantized weights
-                        weight_data = matrix.dequantize()
-                    else:
-                        # For regular (non-quantized) weights
-                        weight_data = matrix
-                    
-                    # Ensure weight_data is float32 for numerical stability
-                    weight_data = weight_data.to(torch.float32)
-                    
-                    # Step 1: Normalize the refusal direction (already done above)
-                    
-                    # Step 2: Decompose weight matrix into magnitude and direction
-                    W_norm = torch.norm(weight_data, dim=1, keepdim=True)  # [out_features, 1]
-                    # Avoid division by zero
-                    W_norm = torch.clamp(W_norm, min=1e-8)
-                    W_direction = weight_data / W_norm  # normalized per output neuron
-                    
-                    # Step 3: Ablate refusal direction from the normalized directional component
-                    # Compute projection coefficients (alignment of each input dimension with refusal)
-                    projection = torch.matmul(refusal_normalized, W_direction)  # [in_features]
-                    
-                    # Remove the refusal component via rank-1 update
-                    W_direction_ablated = W_direction - scale_factor * torch.outer(refusal_normalized, projection)
-                    
-                    # Renormalize each row to unit length
-                    W_direction_new = F.normalize(W_direction_ablated, dim=1)
-                    
-                    # Step 4: Recombine with original magnitudes
-                    W_new = W_norm * W_direction_new
-                    
-                    # Apply the weight factor for this layer
-                    W_new = weight_data + weight * (W_new - weight_data)
-                    
-                    # Convert back to original dtype
-                    W_new = W_new.to(matrix_dtype)
+                    # Apply the norm-preserving modification matching the original implementation
+                    modified_matrix = self.modify_tensor_norm_preserved(
+                        matrix, layer_refusal_direction, scale_factor * weight
+                    )
                     
                     # Update the matrix
                     if hasattr(matrix, 'bnb_quantized') and matrix.bnb_quantized:
@@ -775,7 +733,7 @@ class Model:
                         try:
                             if hasattr(matrix, 'weight') and matrix.weight is not None:
                                 with torch.no_grad():
-                                    matrix.weight.data = W_new
+                                    matrix.weight.data = modified_matrix
                             else:
                                 print(f"* Warning: Cannot update quantized matrix of type {type(matrix)}")
                         except Exception as e:
@@ -783,11 +741,58 @@ class Model:
                     elif hasattr(matrix, '_data_impl') and hasattr(matrix._data_impl, '_value'):
                         # For torchao quantized weights
                         with torch.no_grad():
-                            matrix.copy_(W_new)
+                            matrix.copy_(modified_matrix)
                     else:
                         # For regular weights
                         with torch.no_grad():
-                            matrix.copy_(W_new)
+                            matrix.copy_(modified_matrix)
+
+    def modify_tensor_norm_preserved(
+        self, W: torch.Tensor, refusal_dir: torch.Tensor, scale_factor: float = 1.0,
+    ) -> torch.Tensor:
+        """
+        Modify weight tensor by ablating refusal direction while preserving row norms.
+        Matches the original implementation from llm-abliteration.
+        """
+        original_dtype = W.dtype
+        device = W.device
+
+        with torch.no_grad():
+            # Work with the weight matrix directly (no transpose needed for PyTorch convention)
+            # W is [out_features, in_features] in PyTorch
+            W_work = W.to(device, dtype=torch.float32)
+            
+            # Ensure refusal_dir is a 1-dimensional tensor
+            if refusal_dir.dim() > 1:
+                refusal_dir = refusal_dir.view(-1)
+            
+            refusal_dir = refusal_dir.to(device, dtype=torch.float32)
+            
+            # Normalize refusal direction
+            refusal_normalized = F.normalize(refusal_dir, dim=0)
+
+            # Decompose weight matrix
+            # W_work is [out_features, in_features]
+            W_norm = torch.norm(W_work, dim=1, keepdim=True)  # [out_features, 1]
+            W_direction = F.normalize(W_work, dim=1)  # normalized per output neuron
+        
+            # Apply abliteration to the DIRECTIONAL component
+            # Compute dot product of each row with refusal direction
+            projection = torch.matmul(W_direction, refusal_normalized)  # [out_features]
+            
+            # Subtract the projection using outer product
+            W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
+        
+            # Re-normalize the adjusted direction
+            W_direction_new = F.normalize(W_direction_new, dim=1)
+        
+            # Recombine: keep original magnitude, use new direction
+            W_modified = W_norm * W_direction_new
+            
+            # Convert back to original dtype
+            result = W_modified.to(original_dtype)
+
+        return result.detach().clone()
 
     def _abliterate_impl(
         self,
