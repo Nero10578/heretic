@@ -375,9 +375,9 @@ def run():
         if trial == "original":
             print()
             print("Loading original model (no abliteration)...")
-            print("* Reloading model...")
-            model.reload_model()
-            # Don't apply abliteration for the original model
+            print("* Using original model (no abliteration needed)...")
+            # Clear abliteration params to use original model
+            model.abliteration_params = None
         else:
             print()
             print(f"Restoring model from trial [bold]{trial.user_attrs['index']}[/]...")
