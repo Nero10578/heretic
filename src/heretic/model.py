@@ -124,6 +124,7 @@ class Model:
     def reload_model(self):
         # Purge existing model object from memory to make space.
         self.model = None
+        self.full_precision_model = None
         empty_cache()
 
         # Check if quantization is requested
@@ -247,6 +248,10 @@ class Model:
                     # Ensure temporary directory is always cleaned up
                     import shutil
                     shutil.rmtree(temp_dir, ignore_errors=True)
+                
+                # Clear the full precision model from CPU RAM since we no longer need it
+                self.full_precision_model = None
+                empty_cache()
             else:
                 # For non-quantized models, replace self.model with the abliterated version
                 # to avoid keeping two copies in memory
