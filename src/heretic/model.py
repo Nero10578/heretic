@@ -101,9 +101,12 @@ class AbliterationHook:
             
             # Apply abliteration transformation on-the-fly using vectorized operations
             # output shape: (batch_size, seq_len, hidden_dim) or (batch_size, hidden_dim)
+            
+            # Ensure projector is on the same device as output
+            device = output.device
             projector = torch.outer(
-                layer_refusal_direction,
-                layer_refusal_direction,
+                layer_refusal_direction.to(device),
+                layer_refusal_direction.to(device),
             ).to(output.dtype)
             
             # Apply transformation: output - weight * (projector @ output)
