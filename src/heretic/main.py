@@ -324,6 +324,18 @@ def run():
         for trial in best_trials
     ]
 
+    # Add option to test the original model
+    choices.append(
+        Choice(
+            title=(
+                f"[Original] "
+                f"Refusals: {evaluator.base_refusals:>2}/{len(evaluator.bad_prompts)}, "
+                f"KL divergence: 0.00"
+            ),
+            value="original",
+        )
+    )
+
     choices.append(
         Choice(
             title="None (exit program)",
@@ -354,29 +366,47 @@ def run():
         if trial is None or trial == "":
             break
 
-        print()
-        print(f"Restoring model from trial [bold]{trial.user_attrs['index']}[/]...")
-        print("* Reloading model...")
-        model.reload_model()
-        print("* Abliterating...")
-        model.abliterate(
-            refusal_directions,
-            trial.user_attrs["direction_index"],
-            trial.user_attrs["parameters"],
-        )
+        if trial == "original":
+            print()
+            print("Loading original model (no abliteration)...")
+            print("* Reloading model...")
+            model.reload_model()
+            # Don't apply abliteration for the original model
+        else:
+            print()
+            print(f"Restoring model from trial [bold]{trial.user_attrs['index']}[/]...")
+            print("* Reloading model...")
+            model.reload_model()
+            print("* Abliterating...")
+            model.abliterate(
+                refusal_directions,
+                trial.user_attrs["direction_index"],
+                trial.user_attrs["parameters"],
+            )
 
         while True:
             print()
-            action = questionary.select(
-                "What do you want to do with the decensored model?",
-                choices=[
-                    "Save the model to a local folder",
-                    "Upload the model to Hugging Face",
-                    "Chat with the model",
-                    "Nothing (return to trial selection menu)",
-                ],
-                style=Style([("highlighted", "reverse")]),
-            ).ask()
+            # Different menu for original model vs abliterated models
+            if trial == "original":
+                action = questionary.select(
+                    "What do you want to do with the original model?",
+                    choices=[
+                        "Chat with the model",
+                        "Nothing (return to trial selection menu)",
+                    ],
+                    style=Style([("highlighted", "reverse")]),
+                ).ask()
+            else:
+                action = questionary.select(
+                    "What do you want to do with the decensored model?",
+                    choices=[
+                        "Save the model to a local folder",
+                        "Upload the model to Hugging Face",
+                        "Chat with the model",
+                        "Nothing (return to trial selection menu)",
+                    ],
+                    style=Style([("highlighted", "reverse")]),
+                ).ask()
 
             if action is None or action == "Nothing (return to trial selection menu)":
                 break
