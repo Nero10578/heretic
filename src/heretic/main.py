@@ -39,6 +39,7 @@ from .utils import (
     get_trial_parameters,
     load_prompts,
     print,
+    print_memory_usage,
 )
 
 
@@ -275,10 +276,13 @@ def run():
             print(f"  * {name} = [bold]{value}[/]")
         print("* Reloading model...")
         model.reload_model()
+        print_memory_usage("After reload: ")
         print("* Abliterating...")
         model.abliterate(refusal_directions, direction_index, parameters)
+        print_memory_usage("After abliteration: ")
         print("* Evaluating...")
         score, kl_divergence, refusals = evaluator.get_score()
+        print_memory_usage("After evaluation: ")
 
         elapsed_time = time.perf_counter() - start_time
         remaining_time = (elapsed_time / trial_index) * (

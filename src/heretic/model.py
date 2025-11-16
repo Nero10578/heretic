@@ -20,7 +20,7 @@ from transformers import (
 from transformers.generation.utils import GenerateOutput
 
 from .config import Settings
-from .utils import batchify, empty_cache, print
+from .utils import batchify, empty_cache, print, print_memory_usage
 
 
 @dataclass
@@ -109,15 +109,17 @@ class Model:
             )
 
     def reload_model(self):
+        # Store dtype before clearing model
+        dtype = self.model.dtype if self.model else None
+        
         # Purge existing model object from memory to make space.
         self.model = None
-        empty_cache()
         
         # Force garbage collection to ensure memory is freed
         import gc
         gc.collect()
         
-        # Additional cleanup for ALL CUDA devices
+        # Clear ALL CUDA caches and reset memory stats
         if torch.cuda.is_available():
             # Clear cache for ALL GPUs
             for i in range(torch.cuda.device_count()):
@@ -125,6 +127,11 @@ class Model:
                     torch.cuda.synchronize()
                     torch.cuda.empty_cache()
                     torch.cuda.reset_peak_memory_stats()
+                    # Force additional cleanup
+                    torch.cuda.ipc_collect()
+        
+        # Call empty_cache for comprehensive cleanup
+        empty_cache()
 
         # Check if quantization is requested
         if self.settings.load_in_4bit or self.settings.load_in_8bit:
@@ -132,11 +139,11 @@ class Model:
             # from the full precision model in CPU RAM
             pass
         else:
-            dtype = self.model.dtype if self.model else None
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.settings.model,
                 dtype=dtype,
                 device_map=self.settings.device_map,
+                low_cpu_mem_usage=True,  # Enable to reduce memory usage during loading
             )
 
     def get_layers(self) -> ModuleList:
@@ -215,27 +222,16 @@ class Model:
             
             # Clear current model from VRAM before loading full precision model
             self.model = None
+            
+            # Aggressive memory cleanup
             empty_cache()
             
-            # Force garbage collection to ensure memory is freed
-            import gc
-            gc.collect()
-            
-            # Additional cleanup for ALL CUDA devices
-            if torch.cuda.is_available():
-                # Clear cache for ALL GPUs
-                for i in range(torch.cuda.device_count()):
-                    with torch.cuda.device(i):
-                        torch.cuda.synchronize()
-                        torch.cuda.empty_cache()
-                        torch.cuda.reset_peak_memory_stats()
-            
-            # Load full precision model to CPU RAM
+            # Load full precision model to CPU RAM with memory optimizations
             full_model = AutoModelForCausalLM.from_pretrained(
                 self.settings.model,
                 torch_dtype=torch.bfloat16,
                 device_map="cpu",
-                low_cpu_mem_usage=False,
+                low_cpu_mem_usage=True,  # Enable to reduce memory usage
             )
             
             # Apply abliteration to full precision model
@@ -246,26 +242,19 @@ class Model:
             temp_model_path = os.path.join(temp_dir, "temp_model")
             
             try:
-                full_model.save_pretrained(temp_model_path)
+                # Save with memory-efficient options
+                full_model.save_pretrained(
+                    temp_model_path,
+                    safe_serialization=True,  # Use safetensors for more efficient loading
+                    max_shard_size="2GB",  # Split into smaller shards to reduce memory pressure
+                )
                 
                 # Clean up the full model BEFORE loading the quantized version
                 del full_model
                 full_model = None
                 empty_cache()
                 
-                # Force garbage collection again
-                gc.collect()
-                
-                # Additional cleanup for ALL CUDA devices
-                if torch.cuda.is_available():
-                    # Clear cache for ALL GPUs
-                    for i in range(torch.cuda.device_count()):
-                        with torch.cuda.device(i):
-                            torch.cuda.synchronize()
-                            torch.cuda.empty_cache()
-                            torch.cuda.reset_peak_memory_stats()
-                
-                # Load the abliterated model with quantization
+                # Load the abliterated model with quantization and memory optimizations
                 self.model = AutoModelForCausalLM.from_pretrained(
                     temp_model_path,
                     load_in_4bit=self.settings.load_in_4bit,
@@ -273,6 +262,7 @@ class Model:
                     device_map=self.settings.device_map,
                     torch_dtype=torch.bfloat16,
                     bnb_4bit_compute_dtype=torch.bfloat16,
+                    low_cpu_mem_usage=True,  # Enable to reduce memory usage
                 )
             finally:
                 # Ensure temporary directory is always cleaned up
@@ -281,7 +271,6 @@ class Model:
             
             # Final cleanup
             empty_cache()
-            gc.collect()
         else:
             # For non-quantized models, apply abliteration directly
             self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
@@ -491,6 +480,8 @@ class Model:
         for batch in batchify(prompts, self.settings.batch_size):
             for response in self.get_responses(batch):
                 responses.append(response)
+            # Clear memory after each batch to prevent accumulation
+            empty_cache()
 
         return responses
 
@@ -525,6 +516,8 @@ class Model:
 
         for batch in batchify(prompts, self.settings.batch_size):
             residuals.append(self.get_residuals(batch))
+            # Clear memory after each batch to prevent accumulation
+            empty_cache()
 
         return torch.cat(residuals, dim=0)
 
@@ -551,6 +544,8 @@ class Model:
 
         for batch in batchify(prompts, self.settings.batch_size):
             logprobs.append(self.get_logprobs(batch))
+            # Clear memory after each batch to prevent accumulation
+            empty_cache()
 
         return torch.cat(logprobs, dim=0)
 

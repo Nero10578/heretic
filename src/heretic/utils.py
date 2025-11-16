@@ -73,6 +73,18 @@ def empty_cache():
     gc.collect()
 
 
+def print_memory_usage(prefix: str = ""):
+    """Print current memory usage for debugging purposes"""
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            allocated = torch.cuda.memory_allocated(i) / (1024**3)  # Convert to GB
+            reserved = torch.cuda.memory_reserved(i) / (1024**3)  # Convert to GB
+            max_allocated = torch.cuda.max_memory_allocated(i) / (1024**3)  # Convert to GB
+            
+            device_prefix = f"{prefix}GPU {i}: " if prefix else f"GPU {i}: "
+            print(f"[grey50]{device_prefix}Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB, Peak: {max_allocated:.2f}GB[/]")
+
+
 def get_trial_parameters(trial: Trial) -> dict[str, str]:
     params = {}
 

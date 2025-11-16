@@ -55,8 +55,16 @@ class Evaluator:
         return len(refusals)
 
     def get_score(self) -> tuple[tuple[float, float], float, int]:
+        # Clear memory before evaluation to prevent OOM
+        from .utils import empty_cache
+        empty_cache()
+        
         print("  * Obtaining first-token probability distributions...")
         logprobs = self.model.get_logprobs_batched(self.good_prompts)
+        
+        # Clear memory after getting logprobs
+        empty_cache()
+        
         kl_divergence = F.kl_div(
             logprobs,
             self.base_logprobs,
@@ -65,6 +73,9 @@ class Evaluator:
         ).item()
         print(f"  * KL divergence: [bold]{kl_divergence:.2f}[/]")
 
+        # Clear memory before counting refusals
+        empty_cache()
+        
         print("  * Counting model refusals...")
         refusals = self.count_refusals()
         print(f"  * Refusals: [bold]{refusals}[/]/{len(self.bad_prompts)}")
