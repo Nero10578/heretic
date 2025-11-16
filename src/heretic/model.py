@@ -49,13 +49,14 @@ class Model:
 
         self.model = None
 
-        for dtype in settings.dtypes:
-            print(f"* Trying dtype [bold]{dtype}[/]... ", end="")
-
+        # Check if quantization is requested
+        if settings.load_in_4bit or settings.load_in_8bit:
+            print(f"* Loading model in {'4-bit' if settings.load_in_4bit else '8-bit'} precision... ", end="")
             try:
                 self.model = AutoModelForCausalLM.from_pretrained(
                     settings.model,
-                    dtype=dtype,
+                    load_in_4bit=settings.load_in_4bit,
+                    load_in_8bit=settings.load_in_8bit,
                     device_map=settings.device_map,
                 )
 
@@ -63,17 +64,39 @@ class Model:
                 # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
                 # (https://github.com/meta-llama/llama/issues/380).
                 self.generate(["Test"], max_new_tokens=1)
+                print("[green]Ok[/]")
             except Exception as error:
                 self.model = None
                 empty_cache()
                 print(f"[red]Failed[/] ({error})")
-                continue
+                raise Exception(f"Failed to load model with quantization: {error}")
+        else:
+            # Try different dtypes if quantization is not used
+            for dtype in settings.dtypes:
+                print(f"* Trying dtype [bold]{dtype}[/]... ", end="")
 
-            print("[green]Ok[/]")
-            break
+                try:
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        settings.model,
+                        dtype=dtype,
+                        device_map=settings.device_map,
+                    )
 
-        if self.model is None:
-            raise Exception("Failed to load model with all configured dtypes.")
+                    # A test run can reveal dtype-related problems such as the infamous
+                    # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
+                    # (https://github.com/meta-llama/llama/issues/380).
+                    self.generate(["Test"], max_new_tokens=1)
+                except Exception as error:
+                    self.model = None
+                    empty_cache()
+                    print(f"[red]Failed[/] ({error})")
+                    continue
+
+                print("[green]Ok[/]")
+                break
+
+            if self.model is None:
+                raise Exception("Failed to load model with all configured dtypes.")
 
         print(f"* Transformer model with [bold]{len(self.get_layers())}[/] layers")
         print("* Abliterable components:")
@@ -83,17 +106,25 @@ class Model:
             )
 
     def reload_model(self):
-        dtype = self.model.dtype
-
         # Purge existing model object from memory to make space.
         self.model = None
         empty_cache()
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.settings.model,
-            dtype=dtype,
-            device_map=self.settings.device_map,
-        )
+        # Check if quantization is requested
+        if self.settings.load_in_4bit or self.settings.load_in_8bit:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.settings.model,
+                load_in_4bit=self.settings.load_in_4bit,
+                load_in_8bit=self.settings.load_in_8bit,
+                device_map=self.settings.device_map,
+            )
+        else:
+            dtype = self.model.dtype if self.model else None
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.settings.model,
+                dtype=dtype,
+                device_map=self.settings.device_map,
+            )
 
     def get_layers(self) -> ModuleList:
         # Most multimodal models.
@@ -155,6 +186,14 @@ class Model:
         direction_index: float | None,
         parameters: dict[str, AbliterationParameters],
     ):
+        self._abliterate_impl(refusal_directions, direction_index, parameters)
+
+    def _abliterate_impl(
+        self,
+        refusal_directions: Tensor,
+        direction_index: float | None,
+        parameters: dict[str, AbliterationParameters],
+    ):
         if direction_index is None:
             refusal_direction = None
         else:
@@ -208,6 +247,25 @@ class Model:
                     projector_device = projector.to(matrix.device)
                     # In-place subtraction is safe as we're not using Autograd.
                     matrix.sub_(weight * (projector_device @ matrix))
+
+    def _apply_abliteration_to_model(
+        self,
+        target_model,
+        refusal_directions: Tensor,
+        direction_index: float | None,
+        parameters: dict[str, AbliterationParameters],
+    ):
+        """Apply abliteration to a different model instance (e.g., a full precision model)"""
+        # Temporarily replace self.model with target_model for the duration of this operation
+        original_model = self.model
+        self.model = target_model
+        
+        try:
+            # Apply the abliteration using the same logic as _abliterate_impl
+            self._abliterate_impl(refusal_directions, direction_index, parameters)
+        finally:
+            # Restore the original model
+            self.model = original_model
 
     def get_chat(self, prompt: str) -> list[dict[str, str]]:
         # Check if the tokenizer supports system role

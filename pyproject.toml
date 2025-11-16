@@ -23,6 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "accelerate>=1.10.0",
+    "bitsandbytes>=0.43.0",
     "datasets>=4.0.0",
     "hf-transfer>=0.1.9",
     "huggingface-hub>=0.34.4",

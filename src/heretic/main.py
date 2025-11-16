@@ -392,7 +392,31 @@ def run():
                             continue
 
                         print("Saving model...")
-                        model.model.save_pretrained(save_directory)
+                        
+                        # If quantization was used, load the full precision model and apply abliteration to it
+                        if settings.load_in_4bit or settings.load_in_8bit:
+                            print("* Loading full precision model to CPU...")
+                            # Load the full precision model to CPU
+                            full_model = AutoModelForCausalLM.from_pretrained(
+                                settings.model,
+                                torch_dtype=torch.bfloat16,  # Use bfloat16 for full precision
+                                device_map="cpu",  # Force loading to CPU
+                                low_cpu_mem_usage=False,  # Disable to ensure full model is loaded
+                            )
+                            
+                            print("* Applying abliteration to full precision model...")
+                            # Apply the same abliteration to the full precision model
+                            model._apply_abliteration_to_model(full_model, refusal_directions, trial.user_attrs["direction_index"], trial.user_attrs["parameters"])
+                            
+                            print("* Saving full precision model...")
+                            full_model.save_pretrained(save_directory)
+                            # Clean up
+                            del full_model
+                            empty_cache()
+                        else:
+                            # Save the model as-is (full precision)
+                            model.model.save_pretrained(save_directory)
+                        
                         model.tokenizer.save_pretrained(save_directory)
                         print(f"Model saved to [bold]{save_directory}[/].")
 
@@ -429,12 +453,39 @@ def run():
                         private = visibility == "Private"
 
                         print("Uploading model...")
-
-                        model.model.push_to_hub(
-                            repo_id,
-                            private=private,
-                            token=token,
-                        )
+                        
+                        # If quantization was used, load the full precision model and apply abliteration to it
+                        if settings.load_in_4bit or settings.load_in_8bit:
+                            print("* Loading full precision model to CPU...")
+                            # Load the full precision model to CPU
+                            full_model = AutoModelForCausalLM.from_pretrained(
+                                settings.model,
+                                torch_dtype=torch.bfloat16,  # Use bfloat16 for full precision
+                                device_map="cpu",  # Force loading to CPU
+                                low_cpu_mem_usage=False,  # Disable to ensure full model is loaded
+                            )
+                            
+                            print("* Applying abliteration to full precision model...")
+                            # Apply the same abliteration to the full precision model
+                            model._apply_abliteration_to_model(full_model, refusal_directions, trial.user_attrs["direction_index"], trial.user_attrs["parameters"])
+                            
+                            print("* Uploading full precision model...")
+                            full_model.push_to_hub(
+                                repo_id,
+                                private=private,
+                                token=token,
+                            )
+                            # Clean up
+                            del full_model
+                            empty_cache()
+                        else:
+                            # Upload the model as-is (full precision)
+                            model.model.push_to_hub(
+                                repo_id,
+                                private=private,
+                                token=token,
+                            )
+                        
                         model.tokenizer.push_to_hub(
                             repo_id,
                             private=private,

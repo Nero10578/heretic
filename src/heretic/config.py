@@ -28,6 +28,16 @@ class Settings(BaseSettings):
         description="If this model ID or path is set, then instead of abliterating the main model, evaluate this model relative to the main model.",
     )
 
+    load_in_4bit: bool = Field(
+        default=False,
+        description="Load the model in 4-bit precision using bitsandbytes to save VRAM.",
+    )
+
+    load_in_8bit: bool = Field(
+        default=False,
+        description="Load the model in 8-bit precision using bitsandbytes to save VRAM.",
+    )
+
     dtypes: list[str] = Field(
         default=[
             # In practice, "auto" almost always means bfloat16.
