@@ -247,6 +247,10 @@ class Model:
                     # Ensure temporary directory is always cleaned up
                     import shutil
                     shutil.rmtree(temp_dir, ignore_errors=True)
+            else:
+                # For non-quantized models, replace self.model with the abliterated version
+                # to avoid keeping two copies in memory
+                self.model = self.full_precision_model
 
     def load_quantized_model(self):
         """Load the quantized model from the original model (for original model selection)"""
