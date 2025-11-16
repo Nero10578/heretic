@@ -337,6 +337,7 @@ def run():
                 f"[Trial {trial.user_attrs['index']:>3}] "
                 f"Refusals: {trial.user_attrs['refusals']:>2}/{len(evaluator.bad_prompts)}, "
                 f"KL divergence: {trial.user_attrs['kl_divergence']:.2f}"
+                + (" [yellow](skipped)[/]" if trial.user_attrs['kl_divergence'] > settings.max_kl_divergence else "")
             ),
             value=trial,
         )

@@ -73,12 +73,18 @@ class Evaluator:
         ).item()
         print(f"  * KL divergence: [bold]{kl_divergence:.2f}[/]")
 
-        # Clear memory before counting refusals
-        empty_cache()
-        
-        print("  * Counting model refusals...")
-        refusals = self.count_refusals()
-        print(f"  * Refusals: [bold]{refusals}[/]/{len(self.bad_prompts)}")
+        # Check if KL divergence exceeds the maximum threshold
+        if kl_divergence > self.settings.max_kl_divergence:
+            print(f"  * [yellow]KL divergence exceeds max threshold ({self.settings.max_kl_divergence:.2f}), skipping refusal calculation[/]")
+            refusals = self.base_refusals  # Use base refusals as fallback
+            print(f"  * Refusals: [bold]{refusals}[/]/{len(self.bad_prompts)} [grey50](skipped)[/]")
+        else:
+            # Clear memory before counting refusals
+            empty_cache()
+            
+            print("  * Counting model refusals...")
+            refusals = self.count_refusals()
+            print(f"  * Refusals: [bold]{refusals}[/]/{len(self.bad_prompts)}")
 
         score = (
             (kl_divergence / self.settings.kl_divergence_scale),

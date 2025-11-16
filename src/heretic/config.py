@@ -101,6 +101,11 @@ class Settings(BaseSettings):
         ),
     )
 
+    max_kl_divergence: float = Field(
+        default=1.0,
+        description="Maximum KL divergence threshold. If exceeded, refusal calculation will be skipped to speed up evaluation.",
+    )
+
     n_trials: int = Field(
         default=200,
         description="Number of abliteration trials to run during optimization.",
