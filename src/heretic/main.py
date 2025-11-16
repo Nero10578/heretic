@@ -543,14 +543,20 @@ def run():
 
                                 print("[bold]Assistant:[/] ", end="")
                                 
-                                # For all models, use on-the-fly abliteration for chat
-                                if model.abliteration_params is None:
-                                    # No abliteration parameters stored, need to ask user to select a trial
-                                    print("[yellow]No abliteration parameters available. Please select a trial first.[/]")
-                                    break
-                                else:
-                                    # Use on-the-fly abliteration for chat
+                                # For original model, no abliteration needed
+                                if trial == "original":
+                                    # Use original model without abliteration
+                                    temp_params = model.abliteration_params
+                                    model.abliteration_params = None
                                     response = model.stream_chat_response(chat)
+                                    model.abliteration_params = temp_params
+                                else:
+                                    # For abliterated models, use on-the-fly abliteration
+                                    if model.abliteration_params is None:
+                                        print("[yellow]No abliteration parameters available. Please select a trial first.[/]")
+                                        break
+                                    else:
+                                        response = model.stream_chat_response(chat)
                                 
                                 chat.append({"role": "assistant", "content": response})
                             except (KeyboardInterrupt, EOFError):
