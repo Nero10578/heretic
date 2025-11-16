@@ -7,6 +7,7 @@ from importlib.metadata import version
 from typing import TypeVar
 
 import torch
+import torch.distributed as dist
 from accelerate.utils import (
     is_mlu_available,
     is_musa_available,
@@ -73,6 +74,45 @@ def empty_cache():
     gc.collect()
 
 
+def fsdp_empty_cache():
+    """
+    FSDP-aware cache clearing that handles distributed environments.
+    This function ensures proper synchronization across all processes
+    before clearing caches, which is critical for FSDP to work correctly.
+    """
+    # Only perform distributed operations if FSDP is initialized
+    if dist.is_initialized():
+        # Force garbage collection first
+        gc.collect()
+        
+        # Synchronize all processes before clearing caches
+        if torch.cuda.is_available():
+            # Clear cache for ALL GPUs, not just the current one
+            for i in range(torch.cuda.device_count()):
+                with torch.cuda.device(i):
+                    torch.cuda.synchronize()  # Ensure all operations are complete
+                    torch.cuda.empty_cache()
+                    # Reset peak memory stats to get accurate measurements
+                    torch.cuda.reset_peak_memory_stats()
+        elif is_xpu_available():
+            torch.xpu.empty_cache()
+        elif is_mlu_available():
+            torch.mlu.empty_cache()
+        elif is_sdaa_available():
+            torch.sdaa.empty_cache()
+        elif is_musa_available():
+            torch.musa.empty_cache()
+        
+        # Force garbage collection again after clearing device cache
+        gc.collect()
+        
+        # Synchronize all processes to ensure cache clearing is complete
+        dist.barrier()
+    else:
+        # If not in distributed environment, use regular cache clearing
+        empty_cache()
+
+
 def print_memory_usage(prefix: str = ""):
     """Print current memory usage for debugging purposes"""
     if torch.cuda.is_available():
@@ -83,6 +123,34 @@ def print_memory_usage(prefix: str = ""):
             
             device_prefix = f"{prefix}GPU {i}: " if prefix else f"GPU {i}: "
             print(f"[grey50]{device_prefix}Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB, Peak: {max_allocated:.2f}GB[/]")
+
+
+def fsdp_print_memory_usage(prefix: str = ""):
+    """
+    FSDP-aware memory usage printing that handles distributed environments.
+    This function prints memory usage for all processes in a distributed setting.
+    """
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                allocated = torch.cuda.memory_allocated(i) / (1024**3)  # Convert to GB
+                reserved = torch.cuda.memory_reserved(i) / (1024**3)  # Convert to GB
+                max_allocated = torch.cuda.max_memory_allocated(i) / (1024**3)  # Convert to GB
+                
+                device_prefix = f"{prefix}Rank {rank}, GPU {i}: " if prefix else f"Rank {rank}, GPU {i}: "
+                print(f"[grey50]{device_prefix}Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB, Peak: {max_allocated:.2f}GB[/]")
+                
+                # Print total memory usage across all processes
+                if i == 0:  # Only print once per rank
+                    total_allocated = allocated * world_size
+                    total_reserved = reserved * world_size
+                    print(f"[grey50]{prefix}Total across {world_size} processes: Allocated: {total_allocated:.2f}GB, Reserved: {total_reserved:.2f}GB[/]")
+    else:
+        # If not in distributed environment, use regular memory printing
+        print_memory_usage(prefix)
 
 
 def get_trial_parameters(trial: Trial) -> dict[str, str]:

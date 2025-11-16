@@ -2,6 +2,7 @@
 # Copyright (C) 2025  Philipp Emanuel Weidmann <pew@worldwidemann.com>
 
 import math
+import os
 import sys
 import time
 import warnings
@@ -12,6 +13,7 @@ import huggingface_hub
 import optuna
 import questionary
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 import transformers
 from accelerate.utils import (
@@ -75,6 +77,32 @@ def run():
             "Run [bold]heretic --help[/] or see [bold]config.default.toml[/] for details about configuration parameters."
         )
         return
+
+    # Initialize distributed environment if FSDP is enabled
+    fsdp_initialized = False
+    if settings.use_fsdp:
+        print("Initializing FSDP distributed environment...")
+        
+        # Set environment variables for distributed training
+        if "RANK" not in os.environ:
+            os.environ["RANK"] = "0"
+        if "WORLD_SIZE" not in os.environ:
+            os.environ["WORLD_SIZE"] = str(torch.cuda.device_count())
+        if "LOCAL_RANK" not in os.environ:
+            os.environ["LOCAL_RANK"] = "0"
+        if "MASTER_ADDR" not in os.environ:
+            os.environ["MASTER_ADDR"] = "localhost"
+        if "MASTER_PORT" not in os.environ:
+            os.environ["MASTER_PORT"] = "12355"
+        
+        try:
+            dist.init_process_group(backend="nccl")
+            fsdp_initialized = True
+            print(f"* FSDP initialized with {dist.get_world_size()} processes")
+        except Exception as e:
+            print(f"[red]Failed to initialize FSDP: {e}[/]")
+            print("[yellow]Continuing without FSDP...[/]")
+            settings.use_fsdp = False
 
     # Adapted from https://github.com/huggingface/accelerate/blob/main/src/accelerate/commands/env.py
     if torch.cuda.is_available():

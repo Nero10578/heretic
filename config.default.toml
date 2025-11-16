@@ -23,6 +23,27 @@ torchao_group_size = 128
 # Include embedding layers in torchao quantization.
 torchao_include_embedding = false
 
+# FSDP configuration options
+# Use Fully Sharded Data Parallel (FSDP) for multi-GPU training.
+use_fsdp = false
+
+# FSDP sharding strategy. Options: FULL_SHARD, SHARD_GRAD_OP, NO_SHARD.
+fsdp_sharding_strategy = "FULL_SHARD"
+
+# Offload FSDP parameters to CPU when not in use.
+fsdp_offload_params = false
+
+# Offload FSDP parameters and gradients to CPU.
+fsdp_cpu_offload = false
+
+# FSDP auto wrap policy. Options: TRANSFORMER_BASED_WRAP, SIZE_BASED_WRAP, or None.
+fsdp_auto_wrap_policy = null
+
+# Transformer layer class name to wrap for FSDP auto wrap policy.
+fsdp_transformer_layer_cls_to_wrap = null
+
+# Minimum number of parameters for FSDP size-based auto wrap policy.
+fsdp_min_num_params = 100000000
 
 # List of PyTorch dtypes to try when loading model tensors.
 # If loading with a dtype fails, the next dtype in the list will be tried.

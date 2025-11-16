@@ -2,6 +2,7 @@
 # Copyright (C) 2025  Philipp Emanuel Weidmann <pew@worldwidemann.com>
 
 import math
+import os
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
@@ -10,6 +11,10 @@ import torch
 import torch.nn.functional as F
 from torch import LongTensor, Tensor
 from torch.nn import ModuleList
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import MixedPrecision, BackwardPrefetch, CPUOffload
+from torch.distributed.fsdp.wrap import default_auto_wrap_policy, enable_wrap, wrap
+from torch.distributed.fsdp import ShardingStrategy
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -45,6 +50,15 @@ class AbliterationHook:
         self.good_residuals = good_residuals
         self.bad_residuals = bad_residuals
         
+        # Handle FSDP-wrapped models
+        # If model is FSDP-wrapped, we need to access the underlying model
+        if hasattr(model, 'module'):
+            # FSDP model - access the underlying module
+            self.actual_model = model.module
+        else:
+            # Regular model
+            self.actual_model = model
+        
         # Pre-compute mean directions for projection if needed
         if self.use_norm_preserving and good_residuals is not None and bad_residuals is not None:
             self.harmful_mean = bad_residuals.mean(dim=0)
@@ -55,8 +69,8 @@ class AbliterationHook:
         
     def __enter__(self):
         # Register hooks for all layers
-        for layer_index in range(len(self.model.get_layers())):
-            layer = self.model.get_layers()[layer_index]
+        for layer_index in range(len(self.actual_model.get_layers())):
+            layer = self.actual_model.get_layers()[layer_index]
             
             # Hook for attention output projection
             if hasattr(layer.self_attn, 'o_proj'):
@@ -205,31 +219,227 @@ class AbliterationHook:
 
 
 class Model:
+    def _load_base_model(self, settings: Settings):
+        """Load model without FSDP wrapping"""
+        print(f"* Loading base model [bold]{settings.model}[/]...")
+
+        # Load tokenizer
+        tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
+            settings.model
+        )
+
+        # Fallback for tokenizers that don't declare a special pad token.
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.padding_side = "left"
+        
+        # Ensure tokenizer has chat template set for proper chat functionality
+        if not hasattr(tokenizer, 'chat_template') or tokenizer.chat_template is None:
+            # Set a default chat template if none exists
+            if hasattr(tokenizer, 'default_chat_template'):
+                tokenizer.chat_template = tokenizer.default_chat_template
+            else:
+                # Use a basic chat template as fallback
+                tokenizer.chat_template = "{% for message in messages %}{% for message in messages %}"
+
+        # Load model with appropriate quantization
+        if settings.use_torchao:
+            print(f"* Loading model with torchao quantization ({settings.torchao_quant_type})... ", end="")
+            try:
+                # Create torchao quantization config
+                quantization_config = self._create_torchao_config()
+                
+                # Load model with torchao quantization
+                model = AutoModelForCausalLM.from_pretrained(
+                    settings.model,
+                    quantization_config=quantization_config,
+                    device_map=settings.device_map,
+                    torch_dtype="auto",
+                )
+
+                # A test run can reveal dtype-related problems
+                self._test_model_generation(model, tokenizer)
+                print("[green]Ok[/]")
+            except Exception as error:
+                model = None
+                empty_cache()
+                print(f"[red]Failed[/] ({error})")
+                raise Exception(f"Failed to load model with torchao quantization: {error}")
+        # Check if bitsandbytes quantization is requested
+        elif settings.load_in_4bit or settings.load_in_8bit:
+            print(f"* Loading model in {'4-bit' if settings.load_in_4bit else '8-bit'} precision... ", end="")
+            try:
+                # Load quantized model for optimization
+                model = AutoModelForCausalLM.from_pretrained(
+                    settings.model,
+                    load_in_4bit=settings.load_in_4bit,
+                    load_in_8bit=settings.load_in_8bit,
+                    device_map=settings.device_map,
+                    torch_dtype=torch.bfloat16,  # Ensure we're using bfloat16 for computation
+                    bnb_4bit_compute_dtype=torch.bfloat16,  # Ensure 4-bit computation uses bfloat16
+                )
+
+                # A test run can reveal dtype-related problems such as the infamous
+                # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
+                # (https://github.com/meta-llama/llama/issues/380).
+                self._test_model_generation(model, tokenizer)
+                print("[green]Ok[/]")
+            except Exception as error:
+                model = None
+                empty_cache()
+                print(f"[red]Failed[/] ({error})")
+                raise Exception(f"Failed to load model with quantization: {error}")
+        else:
+            # Try different dtypes if quantization is not used
+            for dtype in settings.dtypes:
+                print(f"* Trying dtype [bold]{dtype}[/]... ", end="")
+
+                try:
+                    model = AutoModelForCausalLM.from_pretrained(
+                        settings.model,
+                        dtype=dtype,
+                        device_map=settings.device_map,
+                    )
+
+                    # A test run can reveal dtype-related problems such as the infamous
+                    # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
+                    # (https://github.com/meta-llama/llama/issues/380).
+                    self._test_model_generation(model, tokenizer)
+                except Exception as error:
+                    model = None
+                    empty_cache()
+                    print(f"[red]Failed[/] ({error})")
+                    continue
+
+                print("[green]Ok[/]")
+                break
+
+            if model is None:
+                raise Exception("Failed to load model with all configured dtypes.")
+
+        print(f"* Transformer model with [bold]{len(self.get_layers(model))}[/] layers")
+        print("* Abliterable components:")
+        for component, matrices in self.get_layer_matrices(model, 0).items():
+            print(
+                f"  * [bold]{component}[/]: [bold]{len(matrices)}[/] matrices per layer"
+            )
+
+        return model, tokenizer
+
+    def _test_model_generation(self, model, tokenizer):
+        """Test model generation to ensure it works properly"""
+        # Create a simple test prompt
+        test_prompt = "Hello, how are you?"
+        chat = [{"role": "user", "content": test_prompt}]
+        
+        # Apply chat template
+        chat_prompt = tokenizer.apply_chat_template(
+            chat,
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+        
+        # Tokenize
+        inputs = tokenizer(
+            chat_prompt,
+            return_tensors="pt",
+            padding=True,
+            return_token_type_ids=False,
+        ).to(model.device)
+        
+        # Generate one token to test
+        with torch.no_grad():
+            model.generate(
+                **inputs,
+                max_new_tokens=1,
+                pad_token_id=tokenizer.eos_token_id,
+                do_sample=False,
+            )
+
+    def _apply_fsdp_wrapper(self, model, settings):
+        """Apply FSDP wrapping to the model based on settings"""
+        # Configure mixed precision
+        mixed_precision = MixedPrecision(
+            param_dtype=torch.bfloat16,
+            buffer_dtype=torch.bfloat16,
+            reduce_dtype=torch.bfloat16,
+        )
+        
+        # Configure CPU offload if requested
+        cpu_offload = CPUOffload(offload_params=settings.fsdp_cpu_offload) if settings.fsdp_cpu_offload else None
+        
+        # Determine sharding strategy
+        sharding_strategy_map = {
+            "FULL_SHARD": ShardingStrategy.FULL_SHARD,
+            "SHARD_GRAD_OP": ShardingStrategy.SHARD_GRAD_OP,
+            "NO_SHARD": ShardingStrategy.NO_SHARD,
+        }
+        sharding_strategy = sharding_strategy_map.get(settings.fsdp_sharding_strategy, ShardingStrategy.FULL_SHARD)
+        
+        # Determine auto wrap policy
+        auto_wrap_policy = None
+        if settings.fsdp_auto_wrap_policy == "TRANSFORMER_BASED_WRAP" and settings.fsdp_transformer_layer_cls_to_wrap:
+            # Get transformer layer class for wrapping
+            transformer_layer_cls = None
+            for name, cls in model.__class__.__dict__.items():
+                if settings.fsdp_transformer_layer_cls_to_wrap in str(cls):
+                    transformer_layer_cls = cls
+                    break
+            
+            if transformer_layer_cls:
+                auto_wrap_policy = transformer_auto_wrap_policy(
+                    transformer_layer_cls={transformer_layer_cls}
+                )
+        elif settings.fsdp_auto_wrap_policy == "SIZE_BASED_WRAP":
+            auto_wrap_policy = size_based_auto_wrap_policy(
+                min_num_params=settings.fsdp_min_num_params
+            )
+        elif settings.fsdp_auto_wrap_policy is None:
+            # Use default auto wrap policy
+            auto_wrap_policy = default_auto_wrap_policy
+        
+        # Apply FSDP wrapping
+        fsdp_model = FSDP(
+            model,
+            mixed_precision=mixed_precision,
+            auto_wrap_policy=auto_wrap_policy,
+            device_id=torch.cuda.current_device(),
+            sharding_strategy=sharding_strategy,
+            cpu_offload=cpu_offload,
+            limit_all_gathers=True,
+            use_orig_params=False,
+        )
+        
+        return fsdp_model
+
     def __init__(self, settings: Settings):
         self.settings = settings
 
         print()
         print(f"Loading model [bold]{settings.model}[/]...")
 
-        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
-            settings.model
-        )
-
-        # Fallback for tokenizers that don't declare a special pad token.
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-            self.tokenizer.padding_side = "left"
+        # Initialize FSDP if enabled
+        if settings.use_fsdp:
+            # Set up distributed environment
+            if not torch.distributed.is_initialized():
+                torch.distributed.init_process_group(backend='nccl')
+            
+            # Determine device ID
+            local_rank = int(os.environ.get("LOCAL_RANK", 0))
+            device_id = local_rank % torch.cuda.device_count()
+            torch.cuda.set_device(device_id)
+            
+            print(f"* Initialized FSDP with local_rank={local_rank}, device_id={device_id}")
         
-        # Ensure tokenizer has chat template set for proper chat functionality
-        if not hasattr(self.tokenizer, 'chat_template') or self.tokenizer.chat_template is None:
-            # Set a default chat template if none exists
-            if hasattr(self.tokenizer, 'default_chat_template'):
-                self.tokenizer.chat_template = self.tokenizer.default_chat_template
-            else:
-                # Use a basic chat template as fallback
-                self.tokenizer.chat_template = "{% for message in messages %}{% for message in messages %}"
-
-        self.model = None
+        # Load base model
+        self.model, self.tokenizer = self._load_base_model(settings)
+        
+        # Apply FSDP wrapping if enabled
+        if settings.use_fsdp:
+            print("* Applying FSDP wrapping...")
+            self.model = self._apply_fsdp_wrapper(self.model, settings)
+            print("[green]FSDP wrapping applied[/]")
+        
         self.abliteration_hook = None  # For on-the-fly abliteration
         self.abliteration_params = None  # Store abliteration parameters
 
@@ -1028,12 +1238,40 @@ class Model:
 
     def get_responses_batched(self, prompts: list[str]) -> list[str]:
         responses = []
-
-        for batch in batchify(prompts, self.settings.batch_size):
-            for response in self.get_responses(batch):
-                responses.append(response)
-            # Clear memory after each batch to prevent accumulation
-            empty_cache()
+        
+        # Handle distributed processing with FSDP
+        if self.settings.use_fsdp:
+            # Split prompts across processes for distributed processing
+            from accelerate import Accelerator
+            accelerator = Accelerator()
+            
+            with accelerator.split_between_processes(prompts) as split_prompts:
+                local_responses = []
+                
+                for batch in batchify(split_prompts, self.settings.batch_size):
+                    for response in self.get_responses(batch):
+                        local_responses.append(response)
+                    # Clear memory after each batch to prevent accumulation
+                    empty_cache()
+                
+                # Gather responses from all processes
+                all_responses = [None] * accelerator.num_processes
+                accelerator.gather_object(local_responses, all_responses)
+                
+                # Flatten gathered results
+                for proc_responses in all_responses:
+                    if proc_responses:
+                        responses.extend(proc_responses)
+                
+                # Wait for all processes to complete
+                accelerator.wait_for_everyone()
+        else:
+            # Standard non-distributed processing
+            for batch in batchify(prompts, self.settings.batch_size):
+                for response in self.get_responses(batch):
+                    responses.append(response)
+                # Clear memory after each batch to prevent accumulation
+                empty_cache()
 
         return responses
 
@@ -1065,13 +1303,53 @@ class Model:
 
     def get_residuals_batched(self, prompts: list[str]) -> Tensor:
         residuals = []
+        
+        # Handle distributed processing with FSDP
+        if self.settings.use_fsdp:
+            # Split prompts across processes for distributed processing
+            from accelerate import Accelerator
+            accelerator = Accelerator()
+            
+            with accelerator.split_between_processes(prompts) as split_prompts:
+                local_residuals = []
+                
+                for batch in batchify(split_prompts, self.settings.batch_size):
+                    local_residuals.append(self.get_residuals(batch))
+                    # Clear memory after each batch to prevent accumulation
+                    empty_cache()
+                
+                # Gather residuals from all processes
+                if local_residuals:
+                    local_residuals = torch.cat(local_residuals, dim=0)
+                else:
+                    # Handle empty case
+                    local_residuals = torch.empty(0, *self.get_residuals(["test"]).shape[1:])
+                
+                all_residuals = [None] * accelerator.num_processes
+                accelerator.gather_object(local_residuals, all_residuals)
+                
+                # Concatenate gathered results
+                valid_residuals = [r for r in all_residuals if r is not None and r.numel() > 0]
+                if valid_residuals:
+                    residuals = torch.cat(valid_residuals, dim=0)
+                else:
+                    residuals = torch.empty(0, *self.get_residuals(["test"]).shape[1:])
+                
+                # Wait for all processes to complete
+                accelerator.wait_for_everyone()
+        else:
+            # Standard non-distributed processing
+            for batch in batchify(prompts, self.settings.batch_size):
+                residuals.append(self.get_residuals(batch))
+                # Clear memory after each batch to prevent accumulation
+                empty_cache()
 
-        for batch in batchify(prompts, self.settings.batch_size):
-            residuals.append(self.get_residuals(batch))
-            # Clear memory after each batch to prevent accumulation
-            empty_cache()
+            if residuals:
+                residuals = torch.cat(residuals, dim=0)
+            else:
+                residuals = torch.empty(0, *self.get_residuals(["test"]).shape[1:])
 
-        return torch.cat(residuals, dim=0)
+        return residuals
 
     # We work with logprobs rather than probabilities for numerical stability
     # when computing the KL divergence.
@@ -1093,13 +1371,53 @@ class Model:
 
     def get_logprobs_batched(self, prompts: list[str]) -> Tensor:
         logprobs = []
+        
+        # Handle distributed processing with FSDP
+        if self.settings.use_fsdp:
+            # Split prompts across processes for distributed processing
+            from accelerate import Accelerator
+            accelerator = Accelerator()
+            
+            with accelerator.split_between_processes(prompts) as split_prompts:
+                local_logprobs = []
+                
+                for batch in batchify(split_prompts, self.settings.batch_size):
+                    local_logprobs.append(self.get_logprobs(batch))
+                    # Clear memory after each batch to prevent accumulation
+                    empty_cache()
+                
+                # Gather logprobs from all processes
+                if local_logprobs:
+                    local_logprobs = torch.cat(local_logprobs, dim=0)
+                else:
+                    # Handle empty case
+                    local_logprobs = torch.empty(0, *self.get_logprobs(["test"]).shape[1:])
+                
+                all_logprobs = [None] * accelerator.num_processes
+                accelerator.gather_object(local_logprobs, all_logprobs)
+                
+                # Concatenate gathered results
+                valid_logprobs = [l for l in all_logprobs if l is not None and l.numel() > 0]
+                if valid_logprobs:
+                    logprobs = torch.cat(valid_logprobs, dim=0)
+                else:
+                    logprobs = torch.empty(0, *self.get_logprobs(["test"]).shape[1:])
 
-        for batch in batchify(prompts, self.settings.batch_size):
-            logprobs.append(self.get_logprobs(batch))
-            # Clear memory after each batch to prevent accumulation
-            empty_cache()
+                # Wait for all processes to complete
+                accelerator.wait_for_everyone()
+        else:
+            # Standard non-distributed processing
+            for batch in batchify(prompts, self.settings.batch_size):
+                logprobs.append(self.get_logprobs(batch))
+                # Clear memory after each batch to prevent accumulation
+                empty_cache()
 
-        return torch.cat(logprobs, dim=0)
+            if logprobs:
+                logprobs = torch.cat(logprobs, dim=0)
+            else:
+                logprobs = torch.empty(0, *self.get_logprobs(["test"]).shape[1:])
+
+        return logprobs
 
     def stream_chat_response(self, chat: list[dict[str, str]]) -> str:
         # Check if the tokenizer supports system role

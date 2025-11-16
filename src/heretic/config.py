@@ -59,6 +59,41 @@ class Settings(BaseSettings):
         description="Include embedding layers in torchao quantization.",
     )
 
+    # FSDP configuration options
+    use_fsdp: bool = Field(
+        default=False,
+        description="Use Fully Sharded Data Parallel (FSDP) for multi-GPU training.",
+    )
+
+    fsdp_sharding_strategy: str = Field(
+        default="FULL_SHARD",
+        description="FSDP sharding strategy. Options: FULL_SHARD, SHARD_GRAD_OP, NO_SHARD.",
+    )
+
+    fsdp_offload_params: bool = Field(
+        default=False,
+        description="Offload FSDP parameters to CPU when not in use.",
+    )
+
+    fsdp_cpu_offload: bool = Field(
+        default=False,
+        description="Offload FSDP parameters and gradients to CPU.",
+    )
+
+    fsdp_auto_wrap_policy: str | None = Field(
+        default=None,
+        description="FSDP auto wrap policy. Options: TRANSFORMER_BASED_WRAP, SIZE_BASED_WRAP, or None.",
+    )
+
+    fsdp_transformer_layer_cls_to_wrap: str | None = Field(
+        default=None,
+        description="Transformer layer class name to wrap for FSDP auto wrap policy.",
+    )
+
+    fsdp_min_num_params: int = Field(
+        default=100000000,
+        description="Minimum number of parameters for FSDP size-based auto wrap policy.",
+    )
 
     dtypes: list[str] = Field(
         default=[
@@ -76,6 +111,42 @@ class Settings(BaseSettings):
     device_map: str | Dict[str, int | str] = Field(
         default="auto",
         description="Device map to pass to Accelerate when loading the model.",
+    )
+
+    # FSDP configuration
+    use_fsdp: bool = Field(
+        default=False,
+        description="Use Fully Sharded Data Parallel (FSDP) for multi-GPU training.",
+    )
+
+    fsdp_sharding_strategy: str = Field(
+        default="FULL_SHARD",
+        description="FSDP sharding strategy: FULL_SHARD, SHARD_GRAD_OP, or NO_SHARD.",
+    )
+
+    fsdp_cpu_offload: bool = Field(
+        default=False,
+        description="Enable CPU offloading for FSDP to save GPU memory.",
+    )
+
+    fsdp_auto_wrap_policy: str = Field(
+        default="default",
+        description="FSDP auto wrap policy: 'default' or custom policy.",
+    )
+
+    fsdp_transformer_layer_cls_to_wrap: str | None = Field(
+        default=None,
+        description="Specific transformer layer class to wrap with FSDP.",
+    )
+
+    fsdp_mixed_precision: str = Field(
+        default="bf16",
+        description="FSDP mixed precision: 'bf16' or 'fp16'.",
+    )
+
+    fsdp_backward_prefetch: str = Field(
+        default="BACKWARD_PRE",
+        description="FSDP backward prefetch strategy.",
     )
 
     batch_size: int = Field(

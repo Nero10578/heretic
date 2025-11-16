@@ -31,6 +31,7 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "questionary>=2.1.1",
     "rich>=14.1.0",
+    "torch>=2.8.0",
     "torchao==0.13.0",
     "transformers>=4.55.2",
 ]
@@ -38,6 +39,9 @@ dependencies = [
 [project.optional-dependencies]
 torchao = [
     "torchao>=0.13.0",
+]
+fsdp = [
+    "torch>=2.8.0",
 ]
 
 [project.urls]
