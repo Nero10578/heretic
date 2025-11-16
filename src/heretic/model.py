@@ -339,6 +339,7 @@ class Model:
         # For all models, we use on-the-fly abliteration which doesn't require model reloading
         if self.model is not None:
             print("* Model already loaded - using on-the-fly abliteration, no reload needed")
+            return  # Skip reloading entirely
         else:
             # Only reload if model is None (initial load or after explicit clearing)
             self.model = AutoModelForCausalLM.from_pretrained(

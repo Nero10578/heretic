@@ -274,9 +274,11 @@ def run():
         print("* Parameters:")
         for name, value in get_trial_parameters(trial).items():
             print(f"  * {name} = [bold]{value}[/]")
-        print("* Reloading model...")
-        model.reload_model()
-        print_memory_usage("After reload: ")
+        
+        # Model is already loaded during initialization, no reloading needed for any trial
+        # On-the-fly abliteration handles all parameter changes
+        print("* Using on-the-fly abliteration - no model reload needed")
+            
         print("* Abliterating...")
         model.abliterate(refusal_directions, direction_index, parameters)
         print_memory_usage("After abliteration: ")
