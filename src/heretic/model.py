@@ -210,10 +210,25 @@ class Model:
                     matrix.sub_(weight * (projector_device @ matrix))
 
     def get_chat(self, prompt: str) -> list[dict[str, str]]:
-        return [
-            {"role": "system", "content": self.settings.system_prompt},
-            {"role": "user", "content": prompt},
-        ]
+        # Check if the tokenizer supports system role
+        try:
+            # Try to apply chat template with system role to check if it's supported
+            test_chat = [
+                {"role": "system", "content": "test"},
+                {"role": "user", "content": "test"},
+            ]
+            self.tokenizer.apply_chat_template(test_chat, tokenize=False)
+            # If no exception, system role is supported
+            return [
+                {"role": "system", "content": self.settings.system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+        except Exception:
+            # If system role is not supported, prepend it to the user message
+            modified_prompt = f"{self.settings.system_prompt}\n\n{prompt}"
+            return [
+                {"role": "user", "content": modified_prompt},
+            ]
 
     def generate(
         self,
@@ -324,8 +339,50 @@ class Model:
         return torch.cat(logprobs, dim=0)
 
     def stream_chat_response(self, chat: list[dict[str, str]]) -> str:
+        # Check if the tokenizer supports system role
+        try:
+            # Try to apply chat template with system role to check if it's supported
+            test_chat = [
+                {"role": "system", "content": "test"},
+                {"role": "user", "content": "test"},
+            ]
+            self.tokenizer.apply_chat_template(test_chat, tokenize=False)
+            # If no exception, use the chat as is
+            formatted_chat = chat
+        except Exception:
+            # If system role is not supported, append system content to first user message
+            formatted_chat = []
+            system_content = None
+            
+            # First, extract system content if present
+            for message in chat:
+                if message["role"] == "system":
+                    system_content = message["content"]
+                    break
+            
+            # Then process the rest of the messages
+            for message in chat:
+                if message["role"] == "system":
+                    # Skip system messages as we'll handle them separately
+                    continue
+                elif message["role"] == "user":
+                    if system_content is not None and not formatted_chat:
+                        # This is the first user message and we have system content
+                        # Append system content to the first user message
+                        modified_content = f"{system_content}\n\n{message['content']}"
+                        formatted_chat.append({"role": "user", "content": modified_content})
+                        system_content = None  # Mark as used
+                    else:
+                        formatted_chat.append(message)
+                else:
+                    formatted_chat.append(message)
+            
+            # If we ended up with an empty chat (unlikely), add a default user message
+            if not formatted_chat:
+                formatted_chat = [{"role": "user", "content": "Hello"}]
+
         chat_prompt: str = self.tokenizer.apply_chat_template(
-            chat,
+            formatted_chat,
             add_generation_prompt=True,
             tokenize=False,
         )
