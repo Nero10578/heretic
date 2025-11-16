@@ -13,7 +13,7 @@ from torch import LongTensor, Tensor
 from torch.nn import ModuleList
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import MixedPrecision, BackwardPrefetch, CPUOffload
-from torch.distributed.fsdp.wrap import default_auto_wrap_policy, enable_wrap, wrap
+from torch.distributed.fsdp.wrap import lambda_auto_wrap_policy, enable_wrap, wrap
 from torch.distributed.fsdp import ShardingStrategy
 from transformers import (
     AutoModelForCausalLM,
@@ -381,7 +381,7 @@ class Model:
         if settings.fsdp_auto_wrap_policy == "TRANSFORMER_BASED_WRAP" and settings.fsdp_transformer_layer_cls_to_wrap:
             # Get transformer layer class for wrapping
             transformer_layer_cls = None
-            for name, cls in model.__class__.__dict__.items():
+            for name, cls in self.model.__class__.__dict__.items():
                 if settings.fsdp_transformer_layer_cls_to_wrap in str(cls):
                     transformer_layer_cls = cls
                     break
@@ -396,7 +396,7 @@ class Model:
             )
         elif settings.fsdp_auto_wrap_policy is None:
             # Use default auto wrap policy
-            auto_wrap_policy = default_auto_wrap_policy
+            auto_wrap_policy = lambda_auto_wrap_policy()
         
         # Apply FSDP wrapping
         fsdp_model = FSDP(

@@ -13,7 +13,13 @@ import torch.distributed as dist
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from heretic.config import Settings
-from heretic.model import Model
+try:
+    from heretic.model import Model
+except ImportError as e:
+    print(f"[red]Failed to import Model: {e}[/]")
+    print("[yellow]Please ensure you have installed heretic with FSDP support:[/]")
+    print("pip install -e '.[fsdp]'")
+    sys.exit(1)
 from heretic.utils import fsdp_print_memory_usage, fsdp_empty_cache
 
 
