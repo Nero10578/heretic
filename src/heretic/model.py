@@ -48,23 +48,12 @@ class Model:
             self.tokenizer.padding_side = "left"
 
         self.model = None
-        self.full_precision_model = None  # Store reference to full precision model
 
         # Check if quantization is requested
         if settings.load_in_4bit or settings.load_in_8bit:
-            print(f"* Loading full precision model to CPU for abliteration... ", end="")
+            print(f"* Loading model in {'4-bit' if settings.load_in_4bit else '8-bit'} precision... ", end="")
             try:
-                # First load full precision model to CPU for abliteration
-                self.full_precision_model = AutoModelForCausalLM.from_pretrained(
-                    settings.model,
-                    torch_dtype=torch.bfloat16,
-                    device_map="cpu",
-                    low_cpu_mem_usage=False,
-                )
-                print("[green]Ok[/]")
-                
-                print(f"* Loading model in {'4-bit' if settings.load_in_4bit else '8-bit'} precision for optimization... ", end="")
-                # Then load quantized model for optimization
+                # Load quantized model for optimization
                 self.model = AutoModelForCausalLM.from_pretrained(
                     settings.model,
                     load_in_4bit=settings.load_in_4bit,
@@ -95,8 +84,6 @@ class Model:
                         dtype=dtype,
                         device_map=settings.device_map,
                     )
-                    # Store reference to full precision model
-                    self.full_precision_model = self.model
 
                     # A test run can reveal dtype-related problems such as the infamous
                     # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
@@ -124,20 +111,13 @@ class Model:
     def reload_model(self):
         # Purge existing model object from memory to make space.
         self.model = None
-        self.full_precision_model = None
         empty_cache()
 
         # Check if quantization is requested
         if self.settings.load_in_4bit or self.settings.load_in_8bit:
-            # Reload the full precision model to CPU RAM for each trial
-            self.full_precision_model = AutoModelForCausalLM.from_pretrained(
-                self.settings.model,
-                torch_dtype=torch.bfloat16,
-                device_map="cpu",
-                low_cpu_mem_usage=False,
-            )
             # Don't reload the quantized model - it will be replaced with the abliterated version
-            # from CPU RAM in the abliterate method
+            # from the full precision model in the abliterate method
+            pass
         else:
             dtype = self.model.dtype if self.model else None
             self.model = AutoModelForCausalLM.from_pretrained(
@@ -145,8 +125,6 @@ class Model:
                 dtype=dtype,
                 device_map=self.settings.device_map,
             )
-            # Update reference to full precision model
-            self.full_precision_model = self.model
 
     def get_layers(self) -> ModuleList:
         # Most multimodal models.
@@ -216,46 +194,54 @@ class Model:
         direction_index: float | None,
         parameters: dict[str, AbliterationParameters],
     ):
-        # Apply abliteration to the full precision model
-        if self.full_precision_model is not None:
-            self._apply_abliteration_to_model(self.full_precision_model, refusal_directions, direction_index, parameters)
+        # Apply abliteration
+        if self.settings.load_in_4bit or self.settings.load_in_8bit:
+            # For quantized models, load full precision model, apply abliteration, then quantize
+            import tempfile
+            import os
             
-            # If using quantization, quantize the abliterated model and replace the quantized model
-            if self.settings.load_in_4bit or self.settings.load_in_8bit:
-                # Save the abliterated full precision model to a temporary location
-                import tempfile
-                import os
-                temp_dir = tempfile.mkdtemp()
-                temp_model_path = os.path.join(temp_dir, "temp_model")
+            # Load full precision model to CPU RAM
+            full_model = AutoModelForCausalLM.from_pretrained(
+                self.settings.model,
+                torch_dtype=torch.bfloat16,
+                device_map="cpu",
+                low_cpu_mem_usage=False,
+            )
+            
+            # Apply abliteration to full precision model
+            self._apply_abliteration_to_model(full_model, refusal_directions, direction_index, parameters)
+            
+            # Save the abliterated full precision model to a temporary location
+            temp_dir = tempfile.mkdtemp()
+            temp_model_path = os.path.join(temp_dir, "temp_model")
+            
+            try:
+                full_model.save_pretrained(temp_model_path)
                 
-                try:
-                    self.full_precision_model.save_pretrained(temp_model_path)
-                    
-                    # Clear current model from VRAM before loading new one
-                    self.model = None
-                    empty_cache()
-                    
-                    # Load the abliterated model with quantization
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        temp_model_path,
-                        load_in_4bit=self.settings.load_in_4bit,
-                        load_in_8bit=self.settings.load_in_8bit,
-                        device_map=self.settings.device_map,
-                        torch_dtype=torch.bfloat16,
-                        bnb_4bit_compute_dtype=torch.bfloat16,
-                    )
-                finally:
-                    # Ensure temporary directory is always cleaned up
-                    import shutil
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                
-                # Clear the full precision model from CPU RAM since we no longer need it
-                self.full_precision_model = None
+                # Clear current model from VRAM before loading new one
+                self.model = None
                 empty_cache()
-            else:
-                # For non-quantized models, replace self.model with the abliterated version
-                # to avoid keeping two copies in memory
-                self.model = self.full_precision_model
+                
+                # Load the abliterated model with quantization
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    temp_model_path,
+                    load_in_4bit=self.settings.load_in_4bit,
+                    load_in_8bit=self.settings.load_in_8bit,
+                    device_map=self.settings.device_map,
+                    torch_dtype=torch.bfloat16,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                )
+            finally:
+                # Ensure temporary directory is always cleaned up
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            # Clean up the full model
+            del full_model
+            empty_cache()
+        else:
+            # For non-quantized models, apply abliteration directly
+            self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
 
     def load_quantized_model(self):
         """Load the quantized model from the original model (for original model selection)"""
