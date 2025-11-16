@@ -575,7 +575,30 @@ def run():
                                 chat.append({"role": "user", "content": message})
 
                                 print("[bold]Assistant:[/] ", end="")
-                                response = model.stream_chat_response(chat)
+                                
+                                # For quantized models, use the loaded quantized model for fast chat
+                                # For unquantized models, use the abliterated model
+                                if settings.use_torchao or settings.load_in_4bit or settings.load_in_8bit:
+                                    response = model.stream_chat_response(chat)
+                                else:
+                                    # For unquantized models, we need to apply abliteration first
+                                    if model.abliteration_params is None:
+                                        # No abliteration parameters stored, need to ask user to select a trial
+                                        print("[yellow]No abliteration parameters available. Please select a trial first.[/]")
+                                        break
+                                    else:
+                                        # Apply abliteration to the model for chat
+                                        temp_params = model.abliteration_params
+                                        model.abliteration_params = None  # Clear to avoid applying during chat
+                                        model.abliterate(
+                                            temp_params['refusal_directions'],
+                                            temp_params['direction_index'],
+                                            temp_params['parameters']
+                                        )
+                                        response = model.stream_chat_response(chat)
+                                        # Restore abliteration params for future use
+                                        model.abliteration_params = temp_params
+                                
                                 chat.append({"role": "assistant", "content": response})
                             except (KeyboardInterrupt, EOFError):
                                 # Ctrl+C/Ctrl+D
