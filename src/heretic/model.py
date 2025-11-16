@@ -226,21 +226,27 @@ class Model:
                 import os
                 temp_dir = tempfile.mkdtemp()
                 temp_model_path = os.path.join(temp_dir, "temp_model")
-                self.full_precision_model.save_pretrained(temp_model_path)
                 
-                # Load the abliterated model with quantization
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    temp_model_path,
-                    load_in_4bit=self.settings.load_in_4bit,
-                    load_in_8bit=self.settings.load_in_8bit,
-                    device_map=self.settings.device_map,
-                    torch_dtype=torch.bfloat16,
-                    bnb_4bit_compute_dtype=torch.bfloat16,
-                )
-                
-                # Clean up temporary directory
-                import shutil
-                shutil.rmtree(temp_dir)
+                try:
+                    self.full_precision_model.save_pretrained(temp_model_path)
+                    
+                    # Clear current model from VRAM before loading new one
+                    self.model = None
+                    empty_cache()
+                    
+                    # Load the abliterated model with quantization
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        temp_model_path,
+                        load_in_4bit=self.settings.load_in_4bit,
+                        load_in_8bit=self.settings.load_in_8bit,
+                        device_map=self.settings.device_map,
+                        torch_dtype=torch.bfloat16,
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                    )
+                finally:
+                    # Ensure temporary directory is always cleaned up
+                    import shutil
+                    shutil.rmtree(temp_dir, ignore_errors=True)
 
     def load_quantized_model(self):
         """Load the quantized model from the original model (for original model selection)"""
