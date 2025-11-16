@@ -438,18 +438,24 @@ class Model:
             print("[green]Ok[/]")
             print("* No model reloading needed for subsequent trials - using on-the-fly transformation")
             
-            # For quantized models, run CPU-based abliteration for final model saving
-            # For unquantized models, apply abliteration directly to weights in VRAM
-            if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
-                print("* Preparing final model via CPU-based abliteration for saving...")
-                self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
-            else:
-                print("* Applying abliteration directly to model weights in VRAM...")
-                self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
+            # For all models, NEVER modify weights during trials - only use on-the-fly transformation
+            # Only apply direct weight modification when user selects a trial for final use
+            print("* Using on-the-fly abliteration for trials (no weight modification)...")
+            # Store parameters for on-the-fly application only
         except Exception as error:
             print(f"[red]Failed[/] ({error})")
             print("* Falling back to CPU-based abliteration...")
             self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
+
+    def apply_final_abliteration(self, refusal_directions: Tensor, direction_index: float | None, parameters: dict[str, AbliterationParameters]):
+        """Apply abliteration to model weights for final use (chat/saving)."""
+        print("* Applying final abliteration to model weights...")
+        if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
+            # For quantized models, use CPU-based processing to save unquantized model
+            self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
+        else:
+            # For unquantized models, apply directly to weights in VRAM
+            self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
 
     def _abliterate_via_cpu(self, refusal_directions: Tensor, direction_index: float | None, parameters: dict[str, AbliterationParameters]):
         """Abliterate by loading full precision model to CPU, applying changes, then re-quantizing."""

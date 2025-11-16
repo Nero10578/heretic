@@ -383,8 +383,8 @@ def run():
             print(f"Restoring model from trial [bold]{trial.user_attrs['index']}[/]...")
             print("* Reloading model...")
             model.reload_model()
-            print("* Abliterating...")
-            model.abliterate(
+            print("* Applying final abliteration...")
+            model.apply_final_abliteration(
                 refusal_directions,
                 trial.user_attrs["direction_index"],
                 trial.user_attrs["parameters"],
