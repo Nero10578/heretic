@@ -34,7 +34,7 @@ class AbliterationParameters:
 
 class AbliterationHook:
     """Hook to apply abliteration on-the-fly during forward pass"""
-    def __init__(self, model, refusal_directions, direction_index, parameters):
+    def __init__(self, model, refusal_directions, direction_index, parameters, good_residuals=None, bad_residuals=None):
         self.model = model
         self.refusal_directions = refusal_directions
         self.direction_index = direction_index
@@ -42,6 +42,16 @@ class AbliterationHook:
         self.hooks = []
         self.use_norm_preserving = model.settings.use_norm_preserving_abliteration
         self.scale_factor = model.settings.abliteration_scale_factor
+        self.good_residuals = good_residuals
+        self.bad_residuals = bad_residuals
+        
+        # Pre-compute mean directions for projection if needed
+        if self.use_norm_preserving and good_residuals is not None and bad_residuals is not None:
+            self.harmful_mean = bad_residuals.mean(dim=0)
+            self.harmless_mean = good_residuals.mean(dim=0)
+        else:
+            self.harmful_mean = None
+            self.harmless_mean = None
         
     def __enter__(self):
         # Register hooks for all layers
@@ -105,60 +115,52 @@ class AbliterationHook:
             # output shape: (batch_size, seq_len, hidden_dim) or (batch_size, hidden_dim)
             
             if self.use_norm_preserving:
-                # Norm-preserving abliteration approach
-                # This applies the directional transformation while preserving norms
+                # Norm-preserving abliteration approach with projection
                 device = output.device
                 dtype = output.dtype
+                
+                # Apply projection on-the-fly as in the original implementation
+                if self.harmful_mean is not None and self.harmless_mean is not None:
+                    # Get measurement layer index based on direction_index
+                    if self.direction_index is None:
+                        measurement_layer = layer_index
+                    else:
+                        weight_idx, idx = math.modf(self.direction_index)
+                        measurement_layer = int(idx)
+                    
+                    # Get refusal direction from measurement layer
+                    refusal_dir = self.refusal_directions[measurement_layer + 1]  # +1 for embeddings
+                    
+                    # Get harmless direction from target layer
+                    harmless_dir = self.harmless_mean[layer_index]
+                    
+                    # Normalize harmless direction
+                    harmless_normalized = F.normalize(harmless_dir.float(), dim=0)
+                    
+                    # Project and subtract to refine refusal direction
+                    projection_scalar = torch.dot(refusal_dir, harmless_normalized)
+                    refined_refusal_dir = refusal_dir - projection_scalar * harmless_normalized
+                    layer_refusal_direction = refined_refusal_dir
+                
                 refusal_normalized = F.normalize(layer_refusal_direction.to(device).to(dtype), dim=0)
                 
-                # For norm-preserving, we need to work with the weight matrix directly
-                # Since we can't access the weight matrix directly in the hook,
-                # we'll apply a simplified version that preserves output norms
-                
+                # Apply norm-preserving transformation to outputs
                 if len(output.shape) == 3:
                     # For attention output (batch, seq, hidden)
                     original_shape = output.shape
                     output_reshaped = output.view(-1, output.shape[-1])
                     
-                    # Compute projection onto refusal direction
-                    projection_coeffs = torch.matmul(output_reshaped, refusal_normalized)
-                    projection = torch.outer(projection_coeffs, refusal_normalized)
-                    
                     # Apply norm-preserving transformation
-                    # Remove the refusal component and renormalize
-                    output_directional = output_reshaped - self.scale_factor * projection
-                    output_norms = torch.norm(output_reshaped, dim=1, keepdim=True)
-                    output_directional_norms = torch.norm(output_directional, dim=1, keepdim=True)
+                    output_modified = self._apply_norm_preserving_to_output(
+                        output_reshaped, refusal_normalized, weight * self.scale_factor
+                    )
                     
-                    # Avoid division by zero
-                    output_directional_norms = torch.clamp(output_directional_norms, min=1e-8)
-                    
-                    # Preserve original norms
-                    output_preserved = output_directional * (output_norms / output_directional_norms)
-                    
-                    # Apply interpolation weight
-                    output_final = output_reshaped + weight * (output_preserved - output_reshaped)
-                    
-                    output = output_final.view(original_shape)
+                    output = output_modified.view(original_shape)
                 else:
                     # For MLP output (batch, hidden) or other shapes
-                    # Compute projection onto refusal direction
-                    projection_coeffs = torch.matmul(output, refusal_normalized)
-                    projection = torch.outer(projection_coeffs, refusal_normalized)
-                    
-                    # Apply norm-preserving transformation
-                    output_directional = output - self.scale_factor * projection
-                    output_norms = torch.norm(output, dim=1, keepdim=True)
-                    output_directional_norms = torch.norm(output_directional, dim=1, keepdim=True)
-                    
-                    # Avoid division by zero
-                    output_directional_norms = torch.clamp(output_directional_norms, min=1e-8)
-                    
-                    # Preserve original norms
-                    output_preserved = output_directional * (output_norms / output_directional_norms)
-                    
-                    # Apply interpolation weight
-                    output = output + weight * (output_preserved - output)
+                    output = self._apply_norm_preserving_to_output(
+                        output, refusal_normalized, weight * self.scale_factor
+                    )
             else:
                 # Standard abliteration approach
                 # Ensure projector is on the same device as output
@@ -503,6 +505,8 @@ class Model:
         refusal_directions: Tensor,
         direction_index: float | None,
         parameters: dict[str, AbliterationParameters],
+        good_residuals: Tensor = None,
+        bad_residuals: Tensor = None,
     ):
         # Apply abliteration using on-the-fly approach for all models
         if self.settings.use_norm_preserving_abliteration:
@@ -514,7 +518,9 @@ class Model:
             self.abliteration_params = {
                 'refusal_directions': refusal_directions,
                 'direction_index': direction_index,
-                'parameters': parameters
+                'parameters': parameters,
+                'good_residuals': good_residuals,
+                'bad_residuals': bad_residuals
             }
             print("[green]Ok[/]")
             print("* No model reloading needed for subsequent trials - using on-the-fly transformation")
@@ -538,6 +544,8 @@ class Model:
         else:
             # For unquantized models, apply directly to weights in VRAM
             print("* Unquantized model detected - applying abliteration directly to weights in VRAM...")
+            # Note: We don't have residuals here either - this is a design limitation
+            # The original implementation stores measurements separately and loads them during abliteration
             self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
 
     def _abliterate_via_cpu(self, refusal_directions: Tensor, direction_index: float | None, parameters: dict[str, AbliterationParameters]):
@@ -562,6 +570,8 @@ class Model:
         
         # Apply abliteration to full precision model
         print("* Applying abliteration to full precision model in CPU...")
+        # Note: We don't have residuals here, so projection won't be applied for CPU path
+        # This is a limitation - ideally we'd store residuals for later use
         self._apply_abliteration_to_model(full_model, refusal_directions, direction_index, parameters)
         
         # Save the abliterated full precision model to a temporary location
@@ -678,24 +688,20 @@ class Model:
         refusal_directions: Tensor,
         direction_index: float | None,
         parameters: dict[str, AbliterationParameters],
+        good_residuals: Tensor = None,
+        bad_residuals: Tensor = None,
     ):
         """Implement norm-preserving abliteration algorithm matching the original implementation."""
         scale_factor = self.settings.abliteration_scale_factor
         
-        if direction_index is None:
-            refusal_direction = None
+        # Compute mean directions for projection (needed for on-the-fly projection)
+        if good_residuals is not None and bad_residuals is not None:
+            harmful_mean = bad_residuals.mean(dim=0)
+            harmless_mean = good_residuals.mean(dim=0)
         else:
-            # The index must be shifted by 1 because the first element
-            # of refusal_directions is the direction for the embeddings.
-            weight, index = math.modf(direction_index + 1)
-            refusal_direction = F.normalize(
-                refusal_directions[int(index)].lerp(
-                    refusal_directions[int(index) + 1],
-                    weight,
-                ),
-                p=2,
-                dim=0,
-            )
+            # Fallback if residuals not provided
+            harmful_mean = None
+            harmless_mean = None
 
         for layer_index in range(len(self.get_layers())):
             for component, matrices in self.get_layer_matrices(layer_index).items():
@@ -714,17 +720,33 @@ class Model:
                     params.min_weight - params.max_weight
                 )
 
-                if refusal_direction is None:
-                    # The index must be shifted by 1 because the first element
-                    # of refusal_directions is the direction for the embeddings.
-                    layer_refusal_direction = refusal_directions[layer_index + 1]
+                # Get measurement layer index based on direction_index
+                if direction_index is None:
+                    measurement_layer = layer_index
                 else:
-                    layer_refusal_direction = refusal_direction
+                    weight_idx, idx = math.modf(direction_index)
+                    measurement_layer = int(idx)
+
+                # Get refusal direction from measurement layer
+                refusal_dir = refusal_directions[measurement_layer + 1]  # +1 for embeddings
+
+                # Apply projection on-the-fly as in the original implementation
+                if harmless_mean is not None and harmful_mean is not None:
+                    # Get harmless direction from target layer
+                    harmless_dir = harmless_mean[layer_index]
+                    
+                    # Normalize harmless direction
+                    harmless_normalized = F.normalize(harmless_dir.float(), dim=0)
+                    
+                    # Project and subtract to refine refusal direction
+                    projection_scalar = torch.dot(refusal_dir, harmless_normalized)
+                    refined_refusal_dir = refusal_dir - projection_scalar * harmless_normalized
+                    refusal_dir = refined_refusal_dir
 
                 for matrix in matrices:
                     # Apply the norm-preserving modification matching the original implementation
                     modified_matrix = self.modify_tensor_norm_preserved(
-                        matrix, layer_refusal_direction, scale_factor * weight
+                        matrix, refusal_dir, scale_factor * weight
                     )
                     
                     # Update the matrix
@@ -758,23 +780,23 @@ class Model:
         device = W.device
 
         with torch.no_grad():
-            # Work with the weight matrix directly (no transpose needed for PyTorch convention)
-            # W is [out_features, in_features] in PyTorch
-            W_work = W.to(device, dtype=torch.float32)
-            
+            # CRITICAL: Transpose here to convert from safetensors convention to PyTorch convention
+            # In PyTorch, weights are [out_features, in_features]
+            # In safetensors/HF, they're stored as [in_features, out_features]
+            W_gpu = W.to(device, dtype=torch.float32).T  # Transpose to PyTorch convention
+            refusal_dir_gpu = refusal_dir.to(device, dtype=torch.float32)
+
             # Ensure refusal_dir is a 1-dimensional tensor
-            if refusal_dir.dim() > 1:
-                refusal_dir = refusal_dir.view(-1)
-            
-            refusal_dir = refusal_dir.to(device, dtype=torch.float32)
+            if refusal_dir_gpu.dim() > 1:
+                refusal_dir_gpu = refusal_dir_gpu.view(-1)
             
             # Normalize refusal direction
-            refusal_normalized = F.normalize(refusal_dir, dim=0)
+            refusal_normalized = F.normalize(refusal_dir_gpu, dim=0)
 
             # Decompose weight matrix
-            # W_work is [out_features, in_features]
-            W_norm = torch.norm(W_work, dim=1, keepdim=True)  # [out_features, 1]
-            W_direction = F.normalize(W_work, dim=1)  # normalized per output neuron
+            # W_gpu is [out_features, in_features] after transpose
+            W_norm = torch.norm(W_gpu, dim=1, keepdim=True)  # [out_features, 1]
+            W_direction = F.normalize(W_gpu, dim=1)  # normalized per output neuron
         
             # Apply abliteration to the DIRECTIONAL component
             # Compute dot product of each row with refusal direction
@@ -789,8 +811,8 @@ class Model:
             # Recombine: keep original magnitude, use new direction
             W_modified = W_norm * W_direction_new
             
-            # Convert back to original dtype
-            result = W_modified.to(original_dtype)
+            # Convert back to original dtype and transpose back to safetensors convention
+            result = W_modified.T.to(original_dtype)
 
         return result.detach().clone()
 
@@ -920,6 +942,8 @@ class Model:
         refusal_directions: Tensor,
         direction_index: float | None,
         parameters: dict[str, AbliterationParameters],
+        good_residuals: Tensor = None,
+        bad_residuals: Tensor = None,
     ):
         """Apply abliteration to a different model instance (e.g., a full precision model)"""
         # Temporarily replace self.model with target_model for the duration of this operation
@@ -929,7 +953,7 @@ class Model:
         try:
             # Apply the abliteration using the appropriate method
             if self.settings.use_norm_preserving_abliteration:
-                self._norm_preserving_abliterate_impl(refusal_directions, direction_index, parameters)
+                self._norm_preserving_abliterate_impl(refusal_directions, direction_index, parameters, good_residuals, bad_residuals)
             else:
                 self._abliterate_impl(refusal_directions, direction_index, parameters)
         finally:
@@ -983,7 +1007,9 @@ class Model:
                 self,
                 self.abliteration_params['refusal_directions'],
                 self.abliteration_params['direction_index'],
-                self.abliteration_params['parameters']
+                self.abliteration_params['parameters'],
+                self.abliteration_params.get('good_residuals'),
+                self.abliteration_params.get('bad_residuals')
             ):
                 return inputs, self.model.generate(
                     **inputs,

@@ -197,15 +197,9 @@ def run():
         dim=1,
     )
     
-    # Apply projection if norm-preserving abliteration is enabled
-    if settings.use_norm_preserving_abliteration:
-        print("* Computing projected refusal directions (Gram-Schmidt orthogonalization)...")
-        refusal_directions = model.compute_projected_directions(
-            initial_refusal_directions, good_residuals, bad_residuals
-        )
-        print("* Projected directions computed successfully")
-    else:
-        refusal_directions = initial_refusal_directions
+    # For norm-preserving abliteration, projection is applied during abliteration, not measurement
+    # This matches the original implementation where projection happens on-the-fly
+    refusal_directions = initial_refusal_directions
 
     trial_index = 0
     start_time = time.perf_counter()
@@ -449,6 +443,8 @@ def run():
                             refusal_directions,
                             trial.user_attrs["direction_index"],
                             trial.user_attrs["parameters"],
+                            good_residuals,
+                            bad_residuals,
                         )
                         
                         # Save the model (now abliterated)
@@ -500,6 +496,8 @@ def run():
                             refusal_directions,
                             trial.user_attrs["direction_index"],
                             trial.user_attrs["parameters"],
+                            good_residuals,
+                            bad_residuals,
                         )
                         
                         # Upload the model (now abliterated)
