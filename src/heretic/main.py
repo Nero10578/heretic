@@ -33,6 +33,7 @@ from rich.traceback import install
 from .config import Settings
 from .evaluator import Evaluator
 from .model import AbliterationParameters, Model
+from .optimized_moe import optimize_for_glm_model
 from .utils import (
     format_duration,
     get_readme_intro,
@@ -115,6 +116,10 @@ def run():
     warnings.filterwarnings("ignore", category=ExperimentalWarning)
 
     model = Model(settings)
+    
+    # Apply MoE optimizations if enabled
+    if settings.moe_enable_optimizations:
+        optimize_for_glm_model(model, settings)
 
     print()
     print(f"Loading good prompts from [bold]{settings.good_prompts.dataset}[/]...")

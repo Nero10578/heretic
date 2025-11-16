@@ -23,6 +23,13 @@ torchao_group_size = 128
 # Include embedding layers in torchao quantization.
 torchao_include_embedding = false
 
+# MoE optimization settings
+moe_enable_optimizations = true
+moe_block_size = 64
+moe_enable_profiling = false
+moe_use_quantized_kernels = true
+moe_max_batch_size = 1024
+
 
 # List of PyTorch dtypes to try when loading model tensors.
 # If loading with a dtype fails, the next dtype in the list will be tried.

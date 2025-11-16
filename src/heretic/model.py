@@ -22,6 +22,7 @@ from transformers.generation.utils import GenerateOutput
 
 from .config import Settings
 from .utils import batchify, empty_cache, print, print_memory_usage
+from .optimized_moe import optimize_for_glm_model, optimized_fused_moe
 
 
 @dataclass
@@ -314,6 +315,15 @@ class Model:
             print(
                 f"  * [bold]{component}[/]: [bold]{len(matrices)}[/] matrices per layer"
             )
+        
+        # Apply MoE optimizations if this is a MoE model
+        try:
+            first_layer = self.get_layers()[0]
+            if hasattr(first_layer.mlp, 'experts') or hasattr(first_layer.mlp, 'shared_experts'):
+                optimize_for_glm_model(self.model, self.settings)
+        except:
+            # Not a MoE model or optimization failed
+            pass
 
     def _create_torchao_config(self):
         """Create a torchao quantization configuration based on settings."""
