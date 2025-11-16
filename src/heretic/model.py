@@ -547,11 +547,22 @@ class Model:
                     # Apply abliteration to both quantized and non-quantized matrices
                     if hasattr(matrix, 'bnb_quantized') and matrix.bnb_quantized:
                         # For bitsandbytes 4-bit quantized weights
-                        # Get the quantized weight data
-                        quant_state = matrix.state()
+                        # Try different approaches to access quantized data
                         
-                        # Dequantize to get the actual weight values
-                        weight_data = quant_state['weight'].dequantize()
+                        # Method 1: Try to access quant_state if available
+                        if hasattr(matrix, 'quant_state'):
+                            quant_state = matrix.quant_state()
+                            weight_data = quant_state['weight'].dequantize()
+                        # Method 2: Try to dequantize directly
+                        elif hasattr(matrix, 'dequantize'):
+                            weight_data = matrix.dequantize()
+                        # Method 3: Try to access weight parameter and dequantize
+                        elif hasattr(matrix, 'weight') and hasattr(matrix.weight, 'dequantize'):
+                            weight_data = matrix.weight.dequantize()
+                        else:
+                            # If we can't dequantize, skip this matrix
+                            print(f"* Warning: Cannot dequantize matrix of type {type(matrix)}, skipping...")
+                            continue
                         
                         # Calculate the projection in the dequantized space
                         projection = weight * (projector_device @ weight_data)
@@ -559,22 +570,17 @@ class Model:
                         # Apply the abliteration by subtracting the projection
                         modified_weight = weight_data - projection
                         
-                        # Now we need to re-quantize the modified weights
-                        # But we'll do this by updating the quantized state directly
-                        # to avoid the matrix multiplication issue
-                        
-                        # Create a new quantized state with the modified weights
-                        new_quant_state = quant_state.copy()
-                        new_quant_state['weight'] = modified_weight
-                        
-                        # Update the matrix with the new quantized weights
-                        with torch.no_grad():
-                            matrix._parameters['weight'].copy_(new_quant_state['weight'])
-                            # Update other quantization parameters if needed
-                            if 'absmax' in new_quant_state:
-                                matrix._parameters['absmax'].copy_(new_quant_state['absmax'])
-                            if 'quant_state' in new_quant_state:
-                                matrix._parameters['quant_state'].copy_(new_quant_state['quant_state'])
+                        # For in-place abliteration, we need to update the quantized weights
+                        # This is complex and may not work reliably with all bitsandbytes versions
+                        try:
+                            # Try to update the weight directly if possible
+                            if hasattr(matrix, 'weight') and matrix.weight is not None:
+                                with torch.no_grad():
+                                    matrix.weight.data = modified_weight
+                            else:
+                                print(f"* Warning: Cannot update quantized matrix of type {type(matrix)}, in-place update may not work")
+                        except Exception as e:
+                            print(f"* Warning: Failed to update quantized matrix: {e}")
                     elif hasattr(matrix, '_data_impl') and hasattr(matrix._data_impl, '_value'):
                         # For torchao quantized weights
                         # torchao uses a different quantization scheme with tensor subclasses
