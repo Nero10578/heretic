@@ -115,33 +115,12 @@ class AbliterationHook:
             # output shape: (batch_size, seq_len, hidden_dim) or (batch_size, hidden_dim)
             
             if self.use_norm_preserving:
-                # Norm-preserving abliteration approach with projection
+                # Norm-preserving abliteration approach
+                # Projection is now applied during measurement, not during abliteration
                 device = output.device
                 dtype = output.dtype
                 
-                # Apply projection on-the-fly as in the original implementation
-                if self.harmful_mean is not None and self.harmless_mean is not None:
-                    # Get measurement layer index based on direction_index
-                    if self.direction_index is None:
-                        measurement_layer = layer_index
-                    else:
-                        weight_idx, idx = math.modf(self.direction_index)
-                        measurement_layer = int(idx)
-                    
-                    # Get refusal direction from measurement layer
-                    refusal_dir = self.refusal_directions[measurement_layer + 1]  # +1 for embeddings
-                    
-                    # Get harmless direction from target layer
-                    harmless_dir = self.harmless_mean[layer_index]
-                    
-                    # Normalize harmless direction
-                    harmless_normalized = F.normalize(harmless_dir.float(), dim=0)
-                    
-                    # Project and subtract to refine refusal direction
-                    projection_scalar = torch.dot(refusal_dir, harmless_normalized)
-                    refined_refusal_dir = refusal_dir - projection_scalar * harmless_normalized
-                    layer_refusal_direction = refined_refusal_dir
-                
+                # Use the refusal direction as-is (already projected during measurement)
                 refusal_normalized = F.normalize(layer_refusal_direction.to(device).to(dtype), dim=0)
                 
                 # Apply norm-preserving transformation to outputs
@@ -728,20 +707,8 @@ class Model:
                     measurement_layer = int(idx)
 
                 # Get refusal direction from measurement layer
+                # Projection is now applied during measurement, not during abliteration
                 refusal_dir = refusal_directions[measurement_layer + 1]  # +1 for embeddings
-
-                # Apply projection on-the-fly as in the original implementation
-                if harmless_mean is not None and harmful_mean is not None:
-                    # Get harmless direction from target layer
-                    harmless_dir = harmless_mean[layer_index]
-                    
-                    # Normalize harmless direction
-                    harmless_normalized = F.normalize(harmless_dir.float(), dim=0)
-                    
-                    # Project and subtract to refine refusal direction
-                    projection_scalar = torch.dot(refusal_dir, harmless_normalized)
-                    refined_refusal_dir = refusal_dir - projection_scalar * harmless_normalized
-                    refusal_dir = refined_refusal_dir
 
                 for matrix in matrices:
                     # Apply the norm-preserving modification matching the original implementation
