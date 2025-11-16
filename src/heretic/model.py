@@ -58,6 +58,8 @@ class Model:
                     load_in_4bit=settings.load_in_4bit,
                     load_in_8bit=settings.load_in_8bit,
                     device_map=settings.device_map,
+                    torch_dtype=torch.bfloat16,  # Ensure we're using bfloat16 for computation
+                    bnb_4bit_compute_dtype=torch.bfloat16,  # Ensure 4-bit computation uses bfloat16
                 )
 
                 # A test run can reveal dtype-related problems such as the infamous
@@ -117,6 +119,8 @@ class Model:
                 load_in_4bit=self.settings.load_in_4bit,
                 load_in_8bit=self.settings.load_in_8bit,
                 device_map=self.settings.device_map,
+                torch_dtype=torch.bfloat16,  # Ensure we're using bfloat16 for computation
+                bnb_4bit_compute_dtype=torch.bfloat16,  # Ensure 4-bit computation uses bfloat16
             )
         else:
             dtype = self.model.dtype if self.model else None
