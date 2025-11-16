@@ -16,6 +16,7 @@ from transformers import (
     BatchEncoding,
     PreTrainedTokenizerBase,
     TextStreamer,
+    TorchAoConfig,
 )
 from transformers.generation.utils import GenerateOutput
 
@@ -49,8 +50,31 @@ class Model:
 
         self.model = None
 
-        # Check if quantization is requested
-        if settings.load_in_4bit or settings.load_in_8bit:
+        # Check if torchao quantization is requested
+        if settings.use_torchao:
+            print(f"* Loading model with torchao quantization ({settings.torchao_quant_type})... ", end="")
+            try:
+                # Create torchao quantization config
+                quantization_config = self._create_torchao_config()
+                
+                # Load model with torchao quantization
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    settings.model,
+                    quantization_config=quantization_config,
+                    device_map=settings.device_map,
+                    torch_dtype="auto",
+                )
+
+                # A test run can reveal dtype-related problems
+                self.generate(["Test"], max_new_tokens=1)
+                print("[green]Ok[/]")
+            except Exception as error:
+                self.model = None
+                empty_cache()
+                print(f"[red]Failed[/] ({error})")
+                raise Exception(f"Failed to load model with torchao quantization: {error}")
+        # Check if bitsandbytes quantization is requested
+        elif settings.load_in_4bit or settings.load_in_8bit:
             print(f"* Loading model in {'4-bit' if settings.load_in_4bit else '8-bit'} precision... ", end="")
             try:
                 # Load quantized model for optimization
@@ -108,6 +132,81 @@ class Model:
                 f"  * [bold]{component}[/]: [bold]{len(matrices)}[/] matrices per layer"
             )
 
+    def _create_torchao_config(self):
+        """Create a torchao quantization configuration based on settings."""
+        try:
+            # Import torchao quantization configs
+            from torchao.quantization import (
+                Int4WeightOnlyConfig,
+                Int8WeightOnlyConfig,
+                Int8DynamicActivationInt8WeightConfig,
+                Float8DynamicActivationFloat8WeightConfig,
+                Float8WeightOnlyConfig,
+                ModuleFqnToConfig,
+            )
+            from torchao.dtypes import (
+                Int4CPULayout,
+                Int4XPULayout,
+                MarlinSparseLayout,
+            )
+            from torchao.quantization.quant_primitives import ZeroPointDomain
+        except ImportError as e:
+            raise ImportError(f"torchao is not installed. Please install it with: pip install torchao transformers. Error: {e}")
+
+        quant_type = self.settings.torchao_quant_type
+        group_size = self.settings.torchao_group_size
+        include_embedding = self.settings.torchao_include_embedding
+        
+        # Determine device-specific layout
+        device_map = self.settings.device_map
+        if isinstance(device_map, str):
+            device = device_map
+        else:
+            # If device_map is a dict, assume first device is the target
+            device = "cuda" if any("cuda" in str(v) for v in device_map.values()) else "cpu"
+        
+        # Create the appropriate quantization config
+        if quant_type == "int4_weight_only":
+            if device == "cpu":
+                layout = Int4CPULayout()
+            elif device == "xpu":
+                layout = Int4XPULayout()
+            else:  # CUDA
+                layout = None  # Use default for CUDA
+            
+            if layout:
+                quant_config = Int4WeightOnlyConfig(group_size=group_size, layout=layout)
+            else:
+                quant_config = Int4WeightOnlyConfig(group_size=group_size)
+                
+        elif quant_type == "int8_weight_only":
+            quant_config = Int8WeightOnlyConfig()
+            
+        elif quant_type == "int8_dynamic_activation_int8_weight":
+            quant_config = Int8DynamicActivationInt8WeightConfig()
+            
+        elif quant_type == "float8_dynamic_activation_float8_weight":
+            quant_config = Float8DynamicActivationFloat8WeightConfig()
+            
+        elif quant_type == "float8_weight_only":
+            quant_config = Float8WeightOnlyConfig()
+            
+        elif quant_type == "int4_weight_only_sparse":
+            layout = MarlinSparseLayout()
+            quant_config = Int4WeightOnlyConfig(group_size=group_size, layout=layout)
+            
+        elif quant_type == "autoquant":
+            # For autoquant, we pass the string directly
+            return TorchAoConfig("autoquant", min_sqnr=None)
+            
+        else:
+            raise ValueError(f"Unsupported torchao quantization type: {quant_type}")
+        
+        return TorchAoConfig(
+            quant_type=quant_config,
+            include_embedding=include_embedding
+        )
+
     def reload_model(self):
         # Store dtype before clearing model
         dtype = self.model.dtype if self.model else None
@@ -133,8 +232,13 @@ class Model:
         # Call empty_cache for comprehensive cleanup
         empty_cache()
 
-        # Check if quantization is requested
-        if self.settings.load_in_4bit or self.settings.load_in_8bit:
+        # Check if torchao quantization is requested
+        if self.settings.use_torchao:
+            # Don't load quantized model here - it will be loaded in abliterate()
+            # from the full precision model in CPU RAM
+            pass
+        # Check if bitsandbytes quantization is requested
+        elif self.settings.load_in_4bit or self.settings.load_in_8bit:
             # Don't load quantized model here - it will be loaded in abliterate()
             # from the full precision model in CPU RAM
             pass
@@ -215,7 +319,7 @@ class Model:
         parameters: dict[str, AbliterationParameters],
     ):
         # Apply abliteration
-        if self.settings.load_in_4bit or self.settings.load_in_8bit:
+        if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
             # For quantized models, load full precision model, apply abliteration, then quantize
             import tempfile
             import os
@@ -245,7 +349,7 @@ class Model:
                 # Save with memory-efficient options
                 full_model.save_pretrained(
                     temp_model_path,
-                    safe_serialization=True,  # Use safetensors for more efficient loading
+                    safe_serialization=False,  # torchao requires safe_serialization=False
                     max_shard_size="2GB",  # Split into smaller shards to reduce memory pressure
                 )
                 
@@ -254,16 +358,28 @@ class Model:
                 full_model = None
                 empty_cache()
                 
-                # Load the abliterated model with quantization and memory optimizations
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    temp_model_path,
-                    load_in_4bit=self.settings.load_in_4bit,
-                    load_in_8bit=self.settings.load_in_8bit,
-                    device_map=self.settings.device_map,
-                    torch_dtype=torch.bfloat16,
-                    bnb_4bit_compute_dtype=torch.bfloat16,
-                    low_cpu_mem_usage=True,  # Enable to reduce memory usage
-                )
+                # Load the abliterated model with quantization
+                if self.settings.use_torchao:
+                    # Load with torchao quantization
+                    quantization_config = self._create_torchao_config()
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        temp_model_path,
+                        quantization_config=quantization_config,
+                        device_map=self.settings.device_map,
+                        torch_dtype="auto",
+                        low_cpu_mem_usage=True,  # Enable to reduce memory usage
+                    )
+                else:
+                    # Load with bitsandbytes quantization
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        temp_model_path,
+                        load_in_4bit=self.settings.load_in_4bit,
+                        load_in_8bit=self.settings.load_in_8bit,
+                        device_map=self.settings.device_map,
+                        torch_dtype=torch.bfloat16,
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                        low_cpu_mem_usage=True,  # Enable to reduce memory usage
+                    )
             finally:
                 # Ensure temporary directory is always cleaned up
                 import shutil
@@ -277,23 +393,37 @@ class Model:
 
     def load_quantized_model(self):
         """Load the quantized model from the original model (for original model selection)"""
-        if self.settings.load_in_4bit or self.settings.load_in_8bit:
+        if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
             # Save the full precision model to a temporary location
             import tempfile
             import os
             temp_dir = tempfile.mkdtemp()
             temp_model_path = os.path.join(temp_dir, "temp_model")
-            self.full_precision_model.save_pretrained(temp_model_path)
+            self.full_precision_model.save_pretrained(
+                temp_model_path,
+                safe_serialization=False,  # torchao requires safe_serialization=False
+            )
             
             # Load the model with quantization
-            self.model = AutoModelForCausalLM.from_pretrained(
-                temp_model_path,
-                load_in_4bit=self.settings.load_in_4bit,
-                load_in_8bit=self.settings.load_in_8bit,
-                device_map=self.settings.device_map,
-                torch_dtype=torch.bfloat16,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-            )
+            if self.settings.use_torchao:
+                # Load with torchao quantization
+                quantization_config = self._create_torchao_config()
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    temp_model_path,
+                    quantization_config=quantization_config,
+                    device_map=self.settings.device_map,
+                    torch_dtype="auto",
+                )
+            else:
+                # Load with bitsandbytes quantization
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    temp_model_path,
+                    load_in_4bit=self.settings.load_in_4bit,
+                    load_in_8bit=self.settings.load_in_8bit,
+                    device_map=self.settings.device_map,
+                    torch_dtype=torch.bfloat16,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                )
             
             # Clean up temporary directory
             import shutil
@@ -359,9 +489,7 @@ class Model:
                     
                     # Apply abliteration to both quantized and non-quantized matrices
                     if hasattr(matrix, 'bnb_quantized') and matrix.bnb_quantized:
-                        # For 4-bit quantized weights, we need to work with the quantized representation
-                        # but avoid the matrix multiplication that causes shape mismatch
-                        
+                        # For bitsandbytes 4-bit quantized weights
                         # Get the quantized weight data
                         quant_state = matrix.state()
                         
@@ -390,6 +518,26 @@ class Model:
                                 matrix._parameters['absmax'].copy_(new_quant_state['absmax'])
                             if 'quant_state' in new_quant_state:
                                 matrix._parameters['quant_state'].copy_(new_quant_state['quant_state'])
+                    elif hasattr(matrix, '_data_impl') and hasattr(matrix._data_impl, '_value'):
+                        # For torchao quantized weights
+                        # torchao uses a different quantization scheme with tensor subclasses
+                        # We need to work with the underlying data
+                        
+                        # Get the dequantized weight data
+                        weight_data = matrix.dequantize()
+                        
+                        # Calculate the projection in the dequantized space
+                        projection = weight * (projector_device @ weight_data)
+                        
+                        # Apply the abliteration by subtracting the projection
+                        modified_weight = weight_data - projection
+                        
+                        # For torchao, we need to update the weight data directly
+                        # This is a simplified approach - in practice, torchao quantization
+                        # might require more complex handling
+                        with torch.no_grad():
+                            # Update the tensor data in place
+                            matrix.copy_(modified_weight)
                     else:
                         # For regular (non-quantized) weights, use the original approach
                         # In-place subtraction is safe as we're not using Autograd.

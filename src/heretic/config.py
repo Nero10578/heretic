@@ -38,6 +38,27 @@ class Settings(BaseSettings):
         description="Load the model in 8-bit precision using bitsandbytes to save VRAM.",
     )
 
+    # torchao quantization options
+    use_torchao: bool = Field(
+        default=False,
+        description="Use torchao for quantization instead of bitsandbytes.",
+    )
+
+    torchao_quant_type: str = Field(
+        default="int4_weight_only",
+        description="Type of torchao quantization to use. Options: int4_weight_only, int8_weight_only, int8_dynamic_activation_int8_weight, float8_dynamic_activation_float8_weight, float8_weight_only, autoquant",
+    )
+
+    torchao_group_size: int = Field(
+        default=128,
+        description="Group size for torchao weight-only quantization.",
+    )
+
+    torchao_include_embedding: bool = Field(
+        default=False,
+        description="Include embedding layers in torchao quantization.",
+    )
+
     dtypes: list[str] = Field(
         default=[
             # In practice, "auto" almost always means bfloat16.
