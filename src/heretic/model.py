@@ -128,15 +128,9 @@ class Model:
 
         # Check if quantization is requested
         if self.settings.load_in_4bit or self.settings.load_in_8bit:
-            # Reload quantized model for optimization
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.settings.model,
-                load_in_4bit=self.settings.load_in_4bit,
-                load_in_8bit=self.settings.load_in_8bit,
-                device_map=self.settings.device_map,
-                torch_dtype=torch.bfloat16,  # Ensure we're using bfloat16 for computation
-                bnb_4bit_compute_dtype=torch.bfloat16,  # Ensure 4-bit computation uses bfloat16
-            )
+            # Don't reload the quantized model - it will be replaced with the abliterated version
+            # from CPU RAM in the abliterate method
+            pass
         else:
             dtype = self.model.dtype if self.model else None
             self.model = AutoModelForCausalLM.from_pretrained(
