@@ -452,13 +452,15 @@ class Model:
         print("* Applying final abliteration to model weights for saving...")
         if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
             # For quantized models, use CPU-based processing to save unquantized model
+            print("* Quantized model detected - loading full precision model to CPU for final abliteration...")
             self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
         else:
             # For unquantized models, apply directly to weights in VRAM
+            print("* Unquantized model detected - applying abliteration directly to weights in VRAM...")
             self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
 
     def _abliterate_via_cpu(self, refusal_directions: Tensor, direction_index: float | None, parameters: dict[str, AbliterationParameters]):
-        """Abliterate by loading full precision model to CPU, applying changes, then re-quantizing."""
+        """Abliterate by loading full precision model to CPU, applying changes, then loading back to device."""
         import tempfile
         import os
         
@@ -469,6 +471,7 @@ class Model:
         empty_cache()
         
         # Load full precision model to CPU RAM with memory optimizations
+        print("* Loading full precision model to CPU RAM for abliteration...")
         full_model = AutoModelForCausalLM.from_pretrained(
             self.settings.model,
             torch_dtype=torch.bfloat16,
@@ -477,6 +480,7 @@ class Model:
         )
         
         # Apply abliteration to full precision model
+        print("* Applying abliteration to full precision model in CPU...")
         self._apply_abliteration_to_model(full_model, refusal_directions, direction_index, parameters)
         
         # Save the abliterated full precision model to a temporary location
@@ -485,6 +489,7 @@ class Model:
         
         try:
             # Save with memory-efficient options
+            print("* Saving abliterated full precision model...")
             full_model.save_pretrained(
                 temp_model_path,
                 safe_serialization=False,  # torchao requires safe_serialization=False
@@ -497,13 +502,14 @@ class Model:
             empty_cache()
            
             # Load the abliterated model WITHOUT quantization (save as full precision)
-            print("* Loading final abliterated model (full precision)...")
+            print("* Loading final abliterated model (full precision) to target device...")
             self.model = AutoModelForCausalLM.from_pretrained(
                 temp_model_path,
                 torch_dtype=torch.bfloat16,
                 device_map=self.settings.device_map,
                 low_cpu_mem_usage=True,  # Enable to reduce memory usage
             )
+            print("* Full precision abliterated model loaded successfully")
         finally:
             # Ensure temporary directory is always cleaned up
             import shutil
@@ -900,11 +906,25 @@ class Model:
             skip_special_tokens=True,
         )
 
-        outputs = self.model.generate(
-            **inputs,
-            streamer=streamer,
-            max_new_tokens=4096,
-        )
+        # Apply on-the-fly abliteration if parameters are available
+        if self.abliteration_params is not None:
+            with AbliterationHook(
+                self,
+                self.abliteration_params['refusal_directions'],
+                self.abliteration_params['direction_index'],
+                self.abliteration_params['parameters']
+            ):
+                outputs = self.model.generate(
+                    **inputs,
+                    streamer=streamer,
+                    max_new_tokens=4096,
+                )
+        else:
+            outputs = self.model.generate(
+                **inputs,
+                streamer=streamer,
+                max_new_tokens=4096,
+            )
 
         return self.tokenizer.decode(
             outputs[0, inputs["input_ids"].shape[1] :],
