@@ -367,6 +367,12 @@ def run():
 
         while True:
             print()
+            # Add note about quantization behavior
+            if settings.load_in_4bit or settings.load_in_8bit:
+                print("[yellow]Note: Since you're using quantization, the current loaded model is not abliterated.[/]")
+                print("[yellow]To chat with the abliterated model, you need to save it first and then reload it.[/]")
+                print()
+            
             action = questionary.select(
                 "What do you want to do with the decensored model?",
                 choices=[
@@ -520,6 +526,23 @@ def run():
 
                     case "Chat with the model":
                         print()
+                        
+                        # Add warning for quantized models
+                        if settings.load_in_4bit or settings.load_in_8bit:
+                            print("[yellow]Warning: You're about to chat with the quantized model which has not been abliterated.[/]")
+                            print("[yellow]This model will likely refuse to answer harmful prompts.[/]")
+                            print("[yellow]To chat with the abliterated model, save it first and then reload it.[/]")
+                            print()
+                            
+                            confirm = questionary.confirm(
+                                "Do you want to continue anyway?",
+                                default=False,
+                                style=Style([("highlighted", "reverse")]),
+                            ).ask()
+                            
+                            if not confirm:
+                                continue
+                        
                         print(
                             "[cyan]Press Ctrl+C at any time to return to the menu.[/]"
                         )

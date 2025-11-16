@@ -249,8 +249,18 @@ class Model:
                 for matrix in matrices:
                     # Ensure projector is on the same device as the matrix
                     projector_device = projector.to(matrix.device)
-                    # In-place subtraction is safe as we're not using Autograd.
-                    matrix.sub_(weight * (projector_device @ matrix))
+                    
+                    # Skip quantized matrices during abliteration
+                    # The quantized model will be used for optimization but
+                    # full precision version will be created during save
+                    if hasattr(matrix, 'bnb_quantized') and matrix.bnb_quantized:
+                        # For 4-bit quantized weights, skip modification during optimization
+                        # The abliteration will be applied to the full precision model during save
+                        continue
+                    else:
+                        # For regular (non-quantized) weights, use the original approach
+                        # In-place subtraction is safe as we're not using Autograd.
+                        matrix.sub_(weight * (projector_device @ matrix))
 
     def _apply_abliteration_to_model(
         self,
