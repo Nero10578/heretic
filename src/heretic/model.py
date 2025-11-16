@@ -774,16 +774,15 @@ class Model:
     ) -> torch.Tensor:
         """
         Modify weight tensor by ablating refusal direction while preserving row norms.
-        Matches the original implementation from llm-abliteration.
+        Adapted for PyTorch models (weights already in [out_features, in_features] format).
         """
         original_dtype = W.dtype
         device = W.device
 
         with torch.no_grad():
-            # CRITICAL: Transpose here to convert from safetensors convention to PyTorch convention
-            # In PyTorch, weights are [out_features, in_features]
-            # In safetensors/HF, they're stored as [in_features, out_features]
-            W_gpu = W.to(device, dtype=torch.float32).T  # Transpose to PyTorch convention
+            # PyTorch models already have weights in [out_features, in_features] format
+            # No transpose needed - this is different from the original that works with safetensors
+            W_gpu = W.to(device, dtype=torch.float32)
             refusal_dir_gpu = refusal_dir.to(device, dtype=torch.float32)
 
             # Ensure refusal_dir is a 1-dimensional tensor
@@ -794,7 +793,7 @@ class Model:
             refusal_normalized = F.normalize(refusal_dir_gpu, dim=0)
 
             # Decompose weight matrix
-            # W_gpu is [out_features, in_features] after transpose
+            # W_gpu is [out_features, in_features] in PyTorch format
             W_norm = torch.norm(W_gpu, dim=1, keepdim=True)  # [out_features, 1]
             W_direction = F.normalize(W_gpu, dim=1)  # normalized per output neuron
         
@@ -811,8 +810,8 @@ class Model:
             # Recombine: keep original magnitude, use new direction
             W_modified = W_norm * W_direction_new
             
-            # Convert back to original dtype and transpose back to safetensors convention
-            result = W_modified.T.to(original_dtype)
+            # Convert back to original dtype (no transpose needed for PyTorch)
+            result = W_modified.to(original_dtype)
 
         return result.detach().clone()
 
