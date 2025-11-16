@@ -56,8 +56,24 @@ def simulate_model_load(size_gb=5):
     if torch.cuda.is_available():
         # Allocate GPU memory to simulate a model
         tensors = []
-        for i in range(int(size_gb * 1024**3 / (1024 * 1024 * 100))):  # ~100MB tensors
-            tensors.append(torch.randn(100, 1024, 1024, device='cuda'))
+        # Calculate how many 1GB tensors we need
+        num_tensors = int(size_gb)
+        remaining_mb = int((size_gb - num_tensors) * 1024)
+        
+        # Allocate 1GB tensors
+        for i in range(num_tensors):
+            # Create a tensor that's approximately 1GB
+            # 1GB = 1024^3 bytes, float32 = 4 bytes per element
+            # So we need 256M elements
+            tensor_size = 256 * 1024 * 1024
+            tensors.append(torch.randn(tensor_size, device='cuda', dtype=torch.float32))
+        
+        # Allocate remaining memory
+        if remaining_mb > 0:
+            # Create a tensor for the remaining MB
+            tensor_size = remaining_mb * 1024 * 1024 // 4  # Convert MB to number of float32 elements
+            tensors.append(torch.randn(tensor_size, device='cuda', dtype=torch.float32))
+        
         return tensors
     return []
 
