@@ -52,22 +52,15 @@ class Model:
         # Check if quantization is requested
         if settings.load_in_4bit or settings.load_in_8bit:
             print(f"* Loading model in {'4-bit' if settings.load_in_4bit else '8-bit'} precision... ", end="")
-            try:
-                # Force device_map to not use CPU offloading
-                device_map = settings.device_map
-                if device_map == "auto":
-                    # Override auto to prevent CPU offloading
-                    device_map = {"": 0} if torch.cuda.is_available() else "cpu"
-                
+            try:         
                 # Load quantized model for optimization
                 self.model = AutoModelForCausalLM.from_pretrained(
                     settings.model,
                     load_in_4bit=settings.load_in_4bit,
                     load_in_8bit=settings.load_in_8bit,
-                    device_map=device_map,
+                    device_map=settings.device_map,
                     torch_dtype=torch.bfloat16,  # Ensure we're using bfloat16 for computation
                     bnb_4bit_compute_dtype=torch.bfloat16,  # Ensure 4-bit computation uses bfloat16
-                    low_cpu_mem_usage=False,  # Disable to ensure full model is loaded to GPU
                 )
 
                 # A test run can reveal dtype-related problems such as the infamous
@@ -86,17 +79,10 @@ class Model:
                 print(f"* Trying dtype [bold]{dtype}[/]... ", end="")
 
                 try:
-                    # Force device_map to not use CPU offloading
-                    device_map = settings.device_map
-                    if device_map == "auto":
-                        # Override auto to prevent CPU offloading
-                        device_map = {"": 0} if torch.cuda.is_available() else "cpu"
-                    
                     self.model = AutoModelForCausalLM.from_pretrained(
                         settings.model,
                         dtype=dtype,
-                        device_map=device_map,
-                        low_cpu_mem_usage=False,  # Disable to ensure full model is loaded to GPU
+                        device_map=settings.device_map,
                     )
 
                     # A test run can reveal dtype-related problems such as the infamous
@@ -151,17 +137,11 @@ class Model:
             pass
         else:
             dtype = self.model.dtype if self.model else None
-            # Force device_map to not use CPU offloading
-            device_map = self.settings.device_map
-            if device_map == "auto":
-                # Override auto to prevent CPU offloading
-                device_map = {"": 0} if torch.cuda.is_available() else "cpu"
             
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.settings.model,
                 dtype=dtype,
-                device_map=device_map,
-                low_cpu_mem_usage=False,  # Disable to ensure full model is loaded to GPU
+                device_map=self.settings.device_map,
             )
 
     def get_layers(self) -> ModuleList:
@@ -261,20 +241,14 @@ class Model:
                 empty_cache()
                 
                 # Load the abliterated model with quantization
-                # Force device_map to not use CPU offloading
-                device_map = self.settings.device_map
-                if device_map == "auto":
-                    # Override auto to prevent CPU offloading
-                    device_map = {"": 0} if torch.cuda.is_available() else "cpu"
                 
                 self.model = AutoModelForCausalLM.from_pretrained(
                     temp_model_path,
                     load_in_4bit=self.settings.load_in_4bit,
                     load_in_8bit=self.settings.load_in_8bit,
-                    device_map=device_map,
+                    device_map=self.settings.device_map,
                     torch_dtype=torch.bfloat16,
                     bnb_4bit_compute_dtype=torch.bfloat16,
-                    low_cpu_mem_usage=False,  # Disable to ensure full model is loaded to GPU
                 )
             finally:
                 # Ensure temporary directory is always cleaned up
