@@ -32,6 +32,105 @@ class AbliterationParameters:
     min_weight_distance: float
 
 
+class AbliterationHook:
+    """Hook to apply abliteration on-the-fly during forward pass"""
+    def __init__(self, model, refusal_directions, direction_index, parameters):
+        self.model = model
+        self.refusal_directions = refusal_directions
+        self.direction_index = direction_index
+        self.parameters = parameters
+        self.hooks = []
+        
+    def __enter__(self):
+        # Register hooks for all layers
+        for layer_index in range(len(self.model.get_layers())):
+            layer = self.model.get_layers()[layer_index]
+            
+            # Hook for attention output projection
+            if hasattr(layer.self_attn, 'o_proj'):
+                hook = layer.self_attn.o_proj.register_forward_hook(
+                    self.make_hook_fn(layer_index, 'attn.o_proj')
+                )
+                self.hooks.append(hook)
+            
+            # Hook for MLP down projection
+            if hasattr(layer.mlp, 'down_proj'):
+                hook = layer.mlp.down_proj.register_forward_hook(
+                    self.make_hook_fn(layer_index, 'mlp.down_proj')
+                )
+                self.hooks.append(hook)
+        
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Remove all hooks
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks = []
+    
+    def make_hook_fn(self, layer_index, component):
+        def hook_fn(module, input, output):
+            # Get parameters for this component
+            params = self.parameters[component]
+            
+            # Calculate distance from max weight position
+            distance = abs(layer_index - params.max_weight_position)
+            
+            # Skip if too far
+            if distance > params.min_weight_distance:
+                return output
+            
+            # Calculate interpolation weight
+            weight = params.max_weight + (distance / params.min_weight_distance) * (
+                params.min_weight - params.max_weight
+            )
+            
+            # Get refusal direction for this layer
+            if self.direction_index is None:
+                layer_refusal_direction = self.refusal_directions[layer_index + 1]
+            else:
+                weight_idx, idx = math.modf(self.direction_index + 1)
+                layer_refusal_direction = F.normalize(
+                    self.refusal_directions[int(idx)].lerp(
+                        self.refusal_directions[int(idx) + 1],
+                        weight_idx,
+                    ),
+                    p=2,
+                    dim=0,
+                )
+            
+            # Apply abliteration transformation on-the-fly using vectorized operations
+            # output shape: (batch_size, seq_len, hidden_dim) or (batch_size, hidden_dim)
+            projector = torch.outer(
+                layer_refusal_direction,
+                layer_refusal_direction,
+            ).to(output.dtype)
+            
+            # Apply transformation: output - weight * (projector @ output)
+            # This is equivalent to modifying the weight matrix
+            if len(output.shape) == 3:
+                # For attention output (batch, seq, hidden)
+                # Reshape for batch processing: (batch*seq, hidden)
+                original_shape = output.shape
+                output_reshaped = output.view(-1, output.shape[-1])
+                
+                # Apply vectorized transformation
+                projection = torch.matmul(projector, output_reshaped.T).T
+                output_reshaped = output_reshaped - weight * projection
+                
+                # Reshape back to original
+                output = output_reshaped.view(original_shape)
+            else:
+                # For MLP output (batch, hidden) or other shapes
+                # Apply vectorized transformation
+                projection = torch.matmul(projector, output.T).T
+                output = output - weight * projection
+            
+            return output
+        
+        return hook_fn
+
+
 class Model:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -49,6 +148,8 @@ class Model:
             self.tokenizer.padding_side = "left"
 
         self.model = None
+        self.abliteration_hook = None  # For on-the-fly abliteration
+        self.abliteration_params = None  # Store abliteration parameters
 
         # Check if torchao quantization is requested
         if settings.use_torchao:
@@ -357,17 +458,18 @@ class Model:
         if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
             # Check if we should abliterate quantized model in-place (faster)
             if self.settings.abliterate_quantized_inplace:
-                print("* Abliterating quantized model in-place (faster but less precise)... ", end="")
+                print("* Using on-the-fly abliteration for quantized model (fast and compatible)... ", end="")
                 try:
-                    # Check if model exists before applying abliteration
-                    if self.model is not None:
-                        # Apply abliteration directly to the quantized model
-                        self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
-                        print("[green]Ok[/]")
-                    else:
-                        print("[red]No model loaded for in-place abliteration[/]")
-                        print("* Falling back to CPU-based abliteration...")
-                        self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
+                    # Store abliteration parameters for on-the-fly application
+                    self.abliteration_params = {
+                        'refusal_directions': refusal_directions,
+                        'direction_index': direction_index,
+                        'parameters': parameters
+                    }
+                    print("[green]Ok[/]")
+                    print("* Note: Final model will still be saved from CPU-based abliteration for best quality")
+                    # Still run CPU-based abliteration to save the final model
+                    self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
                 except Exception as error:
                     print(f"[red]Failed[/] ({error})")
                     print("* Falling back to CPU-based abliteration...")
@@ -666,12 +768,29 @@ class Model:
             return_token_type_ids=False,
         ).to(self.model.device)
 
-        return inputs, self.model.generate(
-            **inputs,
-            **kwargs,
-            pad_token_id=self.tokenizer.eos_token_id,
-            do_sample=False,  # Use greedy decoding to ensure deterministic outputs.
-        )
+        # Apply on-the-fly abliteration if enabled and parameters are available
+        if self.abliteration_params is not None and (
+            self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit
+        ):
+            with AbliterationHook(
+                self,
+                self.abliteration_params['refusal_directions'],
+                self.abliteration_params['direction_index'],
+                self.abliteration_params['parameters']
+            ):
+                return inputs, self.model.generate(
+                    **inputs,
+                    **kwargs,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    do_sample=False,  # Use greedy decoding to ensure deterministic outputs.
+                )
+        else:
+            return inputs, self.model.generate(
+                **inputs,
+                **kwargs,
+                pad_token_id=self.tokenizer.eos_token_id,
+                do_sample=False,  # Use greedy decoding to ensure deterministic outputs.
+            )
 
     def get_responses(self, prompts: list[str]) -> list[str]:
         inputs, outputs = self.generate(

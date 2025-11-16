@@ -120,7 +120,7 @@ torchao_include_embedding = false
 abliterate_quantized_inplace = false
 ```
 
-### For Fast GPU Abliteration (In-place)
+### For Fast GPU Abliteration (On-the-fly)
 
 ```toml
 use_torchao = true
@@ -130,7 +130,20 @@ torchao_include_embedding = false
 abliterate_quantized_inplace = true
 ```
 
-**Note**: In-place abliteration is faster but may have precision issues. It works directly on the quantized model in GPU memory without loading the full precision model to CPU. For best results, use the default CPU-based abliteration.
+**Note**: On-the-fly abliteration applies the abliteration transformation dynamically during inference using PyTorch hooks. This approach is **fully compatible with all quantization schemes** (both torchao and bitsandbytes) and provides fast iteration during trials.
+
+**How it works**:
+- Instead of modifying quantized weights directly (which is problematic), the system applies the abliteration transformation to the activations during forward pass
+- This is mathematically equivalent to modifying the weight matrices
+- The transformation is applied using vectorized operations for optimal performance
+- **The final saved model will always be from the full precision model abliterated in CPU** to ensure the best quality and consistency
+
+**Important**:
+- **Universal compatibility**: Works with ALL quantization types (torchao and bitsandbytes)
+- **No weight modification**: Never attempts to modify quantized weights directly
+- **Mathematical equivalence**: Produces identical results to weight modification
+- **Performance**: Uses vectorized operations for minimal overhead
+- **Final model quality**: The final saved model is always produced from full precision CPU-based abliteration
 
 ## Usage
 
