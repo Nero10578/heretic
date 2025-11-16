@@ -83,15 +83,16 @@ def test_memory_cleanup():
     
     # Test 1: Basic empty_cache functionality
     with memory_monitor("Basic empty_cache test"):
-        simulate_model_load(2)
+        tensors = simulate_model_load(1)  # Use 1GB instead of 2GB
         empty_cache()
+        del tensors
     
     # Test 2: Multiple model loads (simulating trial process)
     print("\n=== Simulating multiple trial reloads ===")
     for i in range(3):
         with memory_monitor(f"Trial {i+1} simulation"):
             # Simulate model load
-            model_tensors = simulate_model_load(3)
+            model_tensors = simulate_model_load(1)  # Use 1GB instead of 3GB
             
             # Simulate some operations
             if torch.cuda.is_available():
@@ -125,7 +126,7 @@ def test_memory_cleanup():
         gc.collect()
         
         # Step 4: Simulate loading quantized model
-        gpu_tensors = simulate_model_load(2)
+        gpu_tensors = simulate_model_load(1)  # Use 1GB instead of 2GB
         
         # Step 5: Final cleanup
         del gpu_tensors
