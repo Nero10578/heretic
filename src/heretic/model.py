@@ -108,7 +108,8 @@ class AbliterationHook:
                 # Norm-preserving abliteration approach
                 # This applies the directional transformation while preserving norms
                 device = output.device
-                refusal_normalized = F.normalize(layer_refusal_direction.to(device), dim=0)
+                dtype = output.dtype
+                refusal_normalized = F.normalize(layer_refusal_direction.to(device).to(dtype), dim=0)
                 
                 # For norm-preserving, we need to work with the weight matrix directly
                 # Since we can't access the weight matrix directly in the hook,
