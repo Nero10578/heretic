@@ -115,15 +115,9 @@ class Model:
 
         # Check if quantization is requested
         if self.settings.load_in_4bit or self.settings.load_in_8bit:
-            # Load quantized model
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.settings.model,
-                load_in_4bit=self.settings.load_in_4bit,
-                load_in_8bit=self.settings.load_in_8bit,
-                device_map=self.settings.device_map,
-                torch_dtype=torch.bfloat16,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-            )
+            # Don't load quantized model here - it will be loaded in abliterate()
+            # from the full precision model in CPU RAM
+            pass
         else:
             dtype = self.model.dtype if self.model else None
             self.model = AutoModelForCausalLM.from_pretrained(
