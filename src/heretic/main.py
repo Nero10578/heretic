@@ -381,8 +381,6 @@ def run():
         else:
             print()
             print(f"Restoring model from trial [bold]{trial.user_attrs['index']}[/]...")
-            print("* Reloading model...")
-            model.reload_model()
             print("* Setting up on-the-fly abliteration for chat...")
             # Store parameters for on-the-fly abliteration during chat
             model.abliteration_params = {
