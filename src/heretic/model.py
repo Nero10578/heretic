@@ -432,6 +432,7 @@ class Model:
             # For quantized models, run CPU-based abliteration for final model saving
             # For unquantized models, apply abliteration directly to weights in VRAM
             if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
+                print("* Preparing final model via CPU-based abliteration for saving...")
                 self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
             else:
                 print("* Applying abliteration directly to model weights in VRAM...")
