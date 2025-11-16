@@ -149,6 +149,15 @@ class Model:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.padding_side = "left"
+        
+        # Ensure tokenizer has chat template set for proper chat functionality
+        if not hasattr(self.tokenizer, 'chat_template') or self.tokenizer.chat_template is None:
+            # Set a default chat template if none exists
+            if hasattr(self.tokenizer, 'default_chat_template'):
+                self.tokenizer.chat_template = self.tokenizer.default_chat_template
+            else:
+                # Use a basic chat template as fallback
+                self.tokenizer.chat_template = "{% for message in messages %}{% for message in messages %}"
 
         self.model = None
         self.abliteration_hook = None  # For on-the-fly abliteration
