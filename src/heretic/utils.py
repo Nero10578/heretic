@@ -51,12 +51,15 @@ def empty_cache():
     # Force garbage collection first
     gc.collect()
     
-    # Clear device-specific caches
+    # Clear device-specific caches for ALL available devices
     if torch.cuda.is_available():
-        torch.cuda.synchronize()  # Ensure all operations are complete
-        torch.cuda.empty_cache()
-        # Reset peak memory stats to get accurate measurements
-        torch.cuda.reset_peak_memory_stats()
+        # Clear cache for ALL GPUs, not just the current one
+        for i in range(torch.cuda.device_count()):
+            with torch.cuda.device(i):
+                torch.cuda.synchronize()  # Ensure all operations are complete
+                torch.cuda.empty_cache()
+                # Reset peak memory stats to get accurate measurements
+                torch.cuda.reset_peak_memory_stats()
     elif is_xpu_available():
         torch.xpu.empty_cache()
     elif is_mlu_available():

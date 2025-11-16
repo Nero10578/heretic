@@ -117,12 +117,14 @@ class Model:
         import gc
         gc.collect()
         
-        # Additional cleanup for CUDA
+        # Additional cleanup for ALL CUDA devices
         if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            # Reset peak memory stats to get accurate measurements
-            torch.cuda.reset_peak_memory_stats()
+            # Clear cache for ALL GPUs
+            for i in range(torch.cuda.device_count()):
+                with torch.cuda.device(i):
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    torch.cuda.reset_peak_memory_stats()
 
         # Check if quantization is requested
         if self.settings.load_in_4bit or self.settings.load_in_8bit:
@@ -219,12 +221,14 @@ class Model:
             import gc
             gc.collect()
             
-            # Additional cleanup for CUDA
+            # Additional cleanup for ALL CUDA devices
             if torch.cuda.is_available():
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-                # Reset peak memory stats to get accurate measurements
-                torch.cuda.reset_peak_memory_stats()
+                # Clear cache for ALL GPUs
+                for i in range(torch.cuda.device_count()):
+                    with torch.cuda.device(i):
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+                        torch.cuda.reset_peak_memory_stats()
             
             # Load full precision model to CPU RAM
             full_model = AutoModelForCausalLM.from_pretrained(
@@ -252,10 +256,14 @@ class Model:
                 # Force garbage collection again
                 gc.collect()
                 
-                # Additional CUDA cleanup
+                # Additional cleanup for ALL CUDA devices
                 if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-                    torch.cuda.empty_cache()
+                    # Clear cache for ALL GPUs
+                    for i in range(torch.cuda.device_count()):
+                        with torch.cuda.device(i):
+                            torch.cuda.synchronize()
+                            torch.cuda.empty_cache()
+                            torch.cuda.reset_peak_memory_stats()
                 
                 # Load the abliterated model with quantization
                 self.model = AutoModelForCausalLM.from_pretrained(
