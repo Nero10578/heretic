@@ -521,15 +521,19 @@ class Model:
     def load_quantized_model(self):
         """Load the quantized model from the original model (for original model selection)"""
         if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
-            # Save the full precision model to a temporary location
+            # Save the current model to a temporary location
             import tempfile
             import os
             temp_dir = tempfile.mkdtemp()
             temp_model_path = os.path.join(temp_dir, "temp_model")
-            self.full_precision_model.save_pretrained(
+            self.model.save_pretrained(
                 temp_model_path,
                 safe_serialization=False,  # torchao requires safe_serialization=False
             )
+            
+            # Clear current model from memory
+            self.model = None
+            empty_cache()
             
             # Load the model with quantization
             if self.settings.use_torchao:
