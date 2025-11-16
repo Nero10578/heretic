@@ -48,8 +48,15 @@ def batchify(items: list[T], batch_size: int) -> list[list[T]]:
 
 
 def empty_cache():
+    # Force garbage collection first
+    gc.collect()
+    
+    # Clear device-specific caches
     if torch.cuda.is_available():
+        torch.cuda.synchronize()  # Ensure all operations are complete
         torch.cuda.empty_cache()
+        # Reset peak memory stats to get accurate measurements
+        torch.cuda.reset_peak_memory_stats()
     elif is_xpu_available():
         torch.xpu.empty_cache()
     elif is_mlu_available():
@@ -58,7 +65,8 @@ def empty_cache():
         torch.sdaa.empty_cache()
     elif is_musa_available():
         torch.musa.empty_cache()
-
+    
+    # Force garbage collection again after clearing device cache
     gc.collect()
 
 

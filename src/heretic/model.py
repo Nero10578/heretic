@@ -112,6 +112,17 @@ class Model:
         # Purge existing model object from memory to make space.
         self.model = None
         empty_cache()
+        
+        # Force garbage collection to ensure memory is freed
+        import gc
+        gc.collect()
+        
+        # Additional cleanup for CUDA
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            # Reset peak memory stats to get accurate measurements
+            torch.cuda.reset_peak_memory_stats()
 
         # Check if quantization is requested
         if self.settings.load_in_4bit or self.settings.load_in_8bit:
@@ -200,6 +211,21 @@ class Model:
             import tempfile
             import os
             
+            # Clear current model from VRAM before loading full precision model
+            self.model = None
+            empty_cache()
+            
+            # Force garbage collection to ensure memory is freed
+            import gc
+            gc.collect()
+            
+            # Additional cleanup for CUDA
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+                # Reset peak memory stats to get accurate measurements
+                torch.cuda.reset_peak_memory_stats()
+            
             # Load full precision model to CPU RAM
             full_model = AutoModelForCausalLM.from_pretrained(
                 self.settings.model,
@@ -218,9 +244,18 @@ class Model:
             try:
                 full_model.save_pretrained(temp_model_path)
                 
-                # Clear current model from VRAM before loading new one
-                self.model = None
+                # Clean up the full model BEFORE loading the quantized version
+                del full_model
+                full_model = None
                 empty_cache()
+                
+                # Force garbage collection again
+                gc.collect()
+                
+                # Additional CUDA cleanup
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
                 
                 # Load the abliterated model with quantization
                 self.model = AutoModelForCausalLM.from_pretrained(
@@ -236,9 +271,9 @@ class Model:
                 import shutil
                 shutil.rmtree(temp_dir, ignore_errors=True)
             
-            # Clean up the full model
-            del full_model
+            # Final cleanup
             empty_cache()
+            gc.collect()
         else:
             # For non-quantized models, apply abliteration directly
             self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
