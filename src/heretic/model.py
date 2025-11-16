@@ -193,6 +193,14 @@ class Model:
             # but thanks to PyTorch's broadcasting magic, it all just works anyway.
             try_add("mlp.down_proj", layer.mlp.experts.down_proj)
 
+        # GLM MoE models.
+        with suppress(Exception):
+            for expert in layer.mlp.experts:
+                try_add("mlp.down_proj", expert.down_proj.weight)
+        # GLM MoE shared experts.
+        with suppress(Exception):
+            try_add("mlp.down_proj", layer.mlp.shared_experts.down_proj.weight)
+
         # We need at least one MLP down-projection.
         assert matrices["mlp.down_proj"]
 
