@@ -324,9 +324,15 @@ class Model:
             if self.settings.abliterate_quantized_inplace:
                 print("* Abliterating quantized model in-place (faster but less precise)... ", end="")
                 try:
-                    # Apply abliteration directly to the quantized model
-                    self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
-                    print("[green]Ok[/]")
+                    # Check if model exists before applying abliteration
+                    if self.model is not None:
+                        # Apply abliteration directly to the quantized model
+                        self._apply_abliteration_to_model(self.model, refusal_directions, direction_index, parameters)
+                        print("[green]Ok[/]")
+                    else:
+                        print("[red]No model loaded for in-place abliteration[/]")
+                        print("* Falling back to CPU-based abliteration...")
+                        self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
                 except Exception as error:
                     print(f"[red]Failed[/] ({error})")
                     print("* Falling back to CPU-based abliteration...")
