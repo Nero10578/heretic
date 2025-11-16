@@ -234,14 +234,49 @@ class Model:
 
         # Check if torchao quantization is requested
         if self.settings.use_torchao:
-            # Don't load quantized model here - it will be loaded in abliterate()
-            # from the full precision model in CPU RAM
-            pass
+            # If in-place abliteration is enabled, reload the quantized model
+            if self.settings.abliterate_quantized_inplace:
+                print("* Reloading quantized model for in-place abliteration... ", end="")
+                try:
+                    quantization_config = self._create_torchao_config()
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        self.settings.model,
+                        quantization_config=quantization_config,
+                        device_map=self.settings.device_map,
+                        torch_dtype="auto",
+                        low_cpu_mem_usage=True,
+                    )
+                    print("[green]Ok[/]")
+                except Exception as error:
+                    print(f"[red]Failed[/] ({error})")
+                    self.model = None
+            else:
+                # Don't load quantized model here - it will be loaded in abliterate()
+                # from the full precision model in CPU RAM
+                pass
         # Check if bitsandbytes quantization is requested
         elif self.settings.load_in_4bit or self.settings.load_in_8bit:
-            # Don't load quantized model here - it will be loaded in abliterate()
-            # from the full precision model in CPU RAM
-            pass
+            # If in-place abliteration is enabled, reload the quantized model
+            if self.settings.abliterate_quantized_inplace:
+                print("* Reloading quantized model for in-place abliteration... ", end="")
+                try:
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        self.settings.model,
+                        load_in_4bit=self.settings.load_in_4bit,
+                        load_in_8bit=self.settings.load_in_8bit,
+                        device_map=self.settings.device_map,
+                        torch_dtype=torch.bfloat16,
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                        low_cpu_mem_usage=True,
+                    )
+                    print("[green]Ok[/]")
+                except Exception as error:
+                    print(f"[red]Failed[/] ({error})")
+                    self.model = None
+            else:
+                # Don't load quantized model here - it will be loaded in abliterate()
+                # from the full precision model in CPU RAM
+                pass
         else:
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.settings.model,
