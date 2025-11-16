@@ -371,6 +371,9 @@ def run():
             print("Loading original model (no abliteration)...")
             print("* Reloading model...")
             model.reload_model()
+            # Load quantized model for original model selection
+            if settings.load_in_4bit or settings.load_in_8bit:
+                model.load_quantized_model()
             # Don't apply abliteration for the original model
         else:
             print()
