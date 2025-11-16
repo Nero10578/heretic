@@ -106,6 +106,16 @@ class Settings(BaseSettings):
         description="Number of abliteration trials to run during optimization.",
     )
 
+    use_norm_preserving_abliteration: bool = Field(
+        default=False,
+        description="Use norm-preserving biprojected abliteration technique instead of standard abliteration.",
+    )
+
+    abliteration_scale_factor: float = Field(
+        default=1.0,
+        description="Scaling factor for abliteration strength (alpha parameter in norm-preserving abliteration).",
+    )
+
     n_startup_trials: int = Field(
         default=60,
         description="Number of trials that use random sampling for the purpose of exploration.",

@@ -40,6 +40,8 @@ class AbliterationHook:
         self.direction_index = direction_index
         self.parameters = parameters
         self.hooks = []
+        self.use_norm_preserving = model.settings.use_norm_preserving_abliteration
+        self.scale_factor = model.settings.abliteration_scale_factor
         
     def __enter__(self):
         # Register hooks for all layers
@@ -99,35 +101,91 @@ class AbliterationHook:
                     dim=0,
                 )
             
-            # Apply abliteration transformation on-the-fly using vectorized operations
+            # Apply abliteration transformation on-the-fly
             # output shape: (batch_size, seq_len, hidden_dim) or (batch_size, hidden_dim)
             
-            # Ensure projector is on the same device as output
-            device = output.device
-            projector = torch.outer(
-                layer_refusal_direction.to(device),
-                layer_refusal_direction.to(device),
-            ).to(output.dtype)
-            
-            # Apply transformation: output - weight * (projector @ output)
-            # This is equivalent to modifying the weight matrix
-            if len(output.shape) == 3:
-                # For attention output (batch, seq, hidden)
-                # Reshape for batch processing: (batch*seq, hidden)
-                original_shape = output.shape
-                output_reshaped = output.view(-1, output.shape[-1])
+            if self.use_norm_preserving:
+                # Norm-preserving abliteration approach
+                # This applies the directional transformation while preserving norms
+                device = output.device
+                refusal_normalized = F.normalize(layer_refusal_direction.to(device), dim=0)
                 
-                # Apply vectorized transformation
-                projection = torch.matmul(projector, output_reshaped.T).T
-                output_reshaped = output_reshaped - weight * projection
+                # For norm-preserving, we need to work with the weight matrix directly
+                # Since we can't access the weight matrix directly in the hook,
+                # we'll apply a simplified version that preserves output norms
                 
-                # Reshape back to original
-                output = output_reshaped.view(original_shape)
+                if len(output.shape) == 3:
+                    # For attention output (batch, seq, hidden)
+                    original_shape = output.shape
+                    output_reshaped = output.view(-1, output.shape[-1])
+                    
+                    # Compute projection onto refusal direction
+                    projection_coeffs = torch.matmul(output_reshaped, refusal_normalized)
+                    projection = torch.outer(projection_coeffs, refusal_normalized)
+                    
+                    # Apply norm-preserving transformation
+                    # Remove the refusal component and renormalize
+                    output_directional = output_reshaped - self.scale_factor * projection
+                    output_norms = torch.norm(output_reshaped, dim=1, keepdim=True)
+                    output_directional_norms = torch.norm(output_directional, dim=1, keepdim=True)
+                    
+                    # Avoid division by zero
+                    output_directional_norms = torch.clamp(output_directional_norms, min=1e-8)
+                    
+                    # Preserve original norms
+                    output_preserved = output_directional * (output_norms / output_directional_norms)
+                    
+                    # Apply interpolation weight
+                    output_final = output_reshaped + weight * (output_preserved - output_reshaped)
+                    
+                    output = output_final.view(original_shape)
+                else:
+                    # For MLP output (batch, hidden) or other shapes
+                    # Compute projection onto refusal direction
+                    projection_coeffs = torch.matmul(output, refusal_normalized)
+                    projection = torch.outer(projection_coeffs, refusal_normalized)
+                    
+                    # Apply norm-preserving transformation
+                    output_directional = output - self.scale_factor * projection
+                    output_norms = torch.norm(output, dim=1, keepdim=True)
+                    output_directional_norms = torch.norm(output_directional, dim=1, keepdim=True)
+                    
+                    # Avoid division by zero
+                    output_directional_norms = torch.clamp(output_directional_norms, min=1e-8)
+                    
+                    # Preserve original norms
+                    output_preserved = output_directional * (output_norms / output_directional_norms)
+                    
+                    # Apply interpolation weight
+                    output = output + weight * (output_preserved - output)
             else:
-                # For MLP output (batch, hidden) or other shapes
-                # Apply vectorized transformation
-                projection = torch.matmul(projector, output.T).T
-                output = output - weight * projection
+                # Standard abliteration approach
+                # Ensure projector is on the same device as output
+                device = output.device
+                projector = torch.outer(
+                    layer_refusal_direction.to(device),
+                    layer_refusal_direction.to(device),
+                ).to(output.dtype)
+                
+                # Apply transformation: output - weight * (projector @ output)
+                # This is equivalent to modifying the weight matrix
+                if len(output.shape) == 3:
+                    # For attention output (batch, seq, hidden)
+                    # Reshape for batch processing: (batch*seq, hidden)
+                    original_shape = output.shape
+                    output_reshaped = output.view(-1, output.shape[-1])
+                    
+                    # Apply vectorized transformation
+                    projection = torch.matmul(projector, output_reshaped.T).T
+                    output_reshaped = output_reshaped - weight * projection
+                    
+                    # Reshape back to original
+                    output = output_reshaped.view(original_shape)
+                else:
+                    # For MLP output (batch, hidden) or other shapes
+                    # Apply vectorized transformation
+                    projection = torch.matmul(projector, output.T).T
+                    output = output - weight * projection
             
             return output
         
@@ -427,7 +485,10 @@ class Model:
         parameters: dict[str, AbliterationParameters],
     ):
         # Apply abliteration using on-the-fly approach for all models
-        print("* Using on-the-fly abliteration (fast and compatible)... ", end="")
+        if self.settings.use_norm_preserving_abliteration:
+            print(f"* Using on-the-fly norm-preserving biprojected abliteration (scale factor: {self.settings.abliteration_scale_factor})... ", end="")
+        else:
+            print("* Using on-the-fly standard abliteration (fast and compatible)... ", end="")
         try:
             # Store abliteration parameters for on-the-fly application
             self.abliteration_params = {
@@ -440,7 +501,10 @@ class Model:
             
             # For all models, NEVER modify weights during trials - only use on-the-fly transformation
             # Only apply direct weight modification when user selects a trial for final use
-            print("* Using on-the-fly abliteration for trials (no weight modification)...")
+            if self.settings.use_norm_preserving_abliteration:
+                print("* Using on-the-fly norm-preserving abliteration for trials (no weight modification)...")
+            else:
+                print("* Using on-the-fly standard abliteration for trials (no weight modification)...")
             # Store parameters for on-the-fly application only
         except Exception as error:
             print(f"[red]Failed[/] ({error})")
@@ -449,7 +513,11 @@ class Model:
 
     def apply_final_abliteration(self, refusal_directions: Tensor, direction_index: float | None, parameters: dict[str, AbliterationParameters]):
         """Apply abliteration to model weights for final use (saving only)."""
-        print("* Applying final abliteration to model weights for saving...")
+        if self.settings.use_norm_preserving_abliteration:
+            print(f"* Applying final norm-preserving biprojected abliteration (scale factor: {self.settings.abliteration_scale_factor})")
+        else:
+            print("* Applying final standard abliteration to model weights for saving...")
+            
         if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
             # For quantized models, use CPU-based processing to save unquantized model
             print("* Quantized model detected - loading full precision model to CPU for final abliteration...")
@@ -559,6 +627,173 @@ class Model:
             # Clean up temporary directory
             import shutil
             shutil.rmtree(temp_dir)
+
+    def compute_biprojected_directions(self, refusal_directions: Tensor, good_residuals: Tensor, bad_residuals: Tensor) -> Tensor:
+        """Compute biprojected refusal directions as described in the paper."""
+        # Compute mean directions for harmful and harmless
+        harmful_mean = bad_residuals.mean(dim=0)
+        harmless_mean = good_residuals.mean(dim=0)
+        
+        # Initial refusal direction
+        refusal_direction = harmful_mean - harmless_mean
+        
+        # Normalize the refusal direction
+        refusal_normalized = F.normalize(refusal_direction, p=2, dim=1)
+        
+        biprojected_directions = []
+        
+        for layer_idx in range(refusal_directions.shape[0]):
+            # Get the current layer's refusal direction
+            layer_refusal_dir = refusal_directions[layer_idx]
+            
+            # Project onto the previous layer's direction (if not the first layer)
+            if layer_idx > 0:
+                prev_dir = refusal_directions[layer_idx - 1]
+                # Compute projection coefficient
+                proj_coeff = torch.dot(layer_refusal_dir, prev_dir) / torch.dot(prev_dir, prev_dir)
+                # Remove the component along previous direction
+                layer_refusal_dir = layer_refusal_dir - proj_coeff * prev_dir
+            
+            # Project onto the next layer's direction (if not the last layer)
+            if layer_idx < refusal_directions.shape[0] - 1:
+                next_dir = refusal_directions[layer_idx + 1]
+                # Compute projection coefficient
+                proj_coeff = torch.dot(layer_refusal_dir, next_dir) / torch.dot(next_dir, next_dir)
+                # Remove the component along next direction
+                layer_refusal_dir = layer_refusal_dir - proj_coeff * next_dir
+            
+            # Renormalize after biprojection
+            layer_refusal_dir = F.normalize(layer_refusal_dir, p=2, dim=0)
+            
+            biprojected_directions.append(layer_refusal_dir)
+        
+        return torch.stack(biprojected_directions)
+
+    def _norm_preserving_abliterate_impl(
+        self,
+        refusal_directions: Tensor,
+        direction_index: float | None,
+        parameters: dict[str, AbliterationParameters],
+    ):
+        """Implement norm-preserving biprojected abliteration algorithm."""
+        scale_factor = self.settings.abliteration_scale_factor
+        
+        if direction_index is None:
+            refusal_direction = None
+        else:
+            # The index must be shifted by 1 because the first element
+            # of refusal_directions is the direction for the embeddings.
+            weight, index = math.modf(direction_index + 1)
+            refusal_direction = F.normalize(
+                refusal_directions[int(index)].lerp(
+                    refusal_directions[int(index) + 1],
+                    weight,
+                ),
+                p=2,
+                dim=0,
+            )
+
+        for layer_index in range(len(self.get_layers())):
+            for component, matrices in self.get_layer_matrices(layer_index).items():
+                params = parameters[component]
+
+                distance = abs(layer_index - params.max_weight_position)
+
+                # Don't orthogonalize layers that are more than
+                # min_weight_distance away from max_weight_position.
+                if distance > params.min_weight_distance:
+                    continue
+
+                # Interpolate linearly between max_weight and min_weight
+                # over min_weight_distance.
+                weight = params.max_weight + (distance / params.min_weight_distance) * (
+                    params.min_weight - params.max_weight
+                )
+
+                if refusal_direction is None:
+                    # The index must be shifted by 1 because the first element
+                    # of refusal_directions is the direction for the embeddings.
+                    layer_refusal_direction = refusal_directions[layer_index + 1]
+                else:
+                    layer_refusal_direction = refusal_direction
+
+                # Normalize refusal direction
+                refusal_normalized = F.normalize(layer_refusal_direction, dim=0)
+
+                for matrix in matrices:
+                    # Ensure we're working with the right dtype and device
+                    matrix_device = matrix.device
+                    matrix_dtype = matrix.dtype
+                    
+                    # Handle quantized matrices by dequantizing first
+                    if hasattr(matrix, 'bnb_quantized') and matrix.bnb_quantized:
+                        # For bitsandbytes 4-bit quantized weights
+                        if hasattr(matrix, 'quant_state'):
+                            quant_state = matrix.quant_state()
+                            weight_data = quant_state['weight'].dequantize()
+                        elif hasattr(matrix, 'dequantize'):
+                            weight_data = matrix.dequantize()
+                        elif hasattr(matrix, 'weight') and hasattr(matrix.weight, 'dequantize'):
+                            weight_data = matrix.weight.dequantize()
+                        else:
+                            print(f"* Warning: Cannot dequantize matrix of type {type(matrix)}, skipping...")
+                            continue
+                    elif hasattr(matrix, '_data_impl') and hasattr(matrix._data_impl, '_value'):
+                        # For torchao quantized weights
+                        weight_data = matrix.dequantize()
+                    else:
+                        # For regular (non-quantized) weights
+                        weight_data = matrix
+                    
+                    # Ensure weight_data is float32 for numerical stability
+                    weight_data = weight_data.to(torch.float32)
+                    
+                    # Step 1: Normalize the refusal direction (already done above)
+                    
+                    # Step 2: Decompose weight matrix into magnitude and direction
+                    W_norm = torch.norm(weight_data, dim=1, keepdim=True)  # [out_features, 1]
+                    # Avoid division by zero
+                    W_norm = torch.clamp(W_norm, min=1e-8)
+                    W_direction = weight_data / W_norm  # normalized per output neuron
+                    
+                    # Step 3: Ablate refusal direction from the normalized directional component
+                    # Compute projection coefficients (alignment of each input dimension with refusal)
+                    projection = torch.matmul(refusal_normalized, W_direction)  # [in_features]
+                    
+                    # Remove the refusal component via rank-1 update
+                    W_direction_ablated = W_direction - scale_factor * torch.outer(refusal_normalized, projection)
+                    
+                    # Renormalize each row to unit length
+                    W_direction_new = F.normalize(W_direction_ablated, dim=1)
+                    
+                    # Step 4: Recombine with original magnitudes
+                    W_new = W_norm * W_direction_new
+                    
+                    # Apply the weight factor for this layer
+                    W_new = weight_data + weight * (W_new - weight_data)
+                    
+                    # Convert back to original dtype
+                    W_new = W_new.to(matrix_dtype)
+                    
+                    # Update the matrix
+                    if hasattr(matrix, 'bnb_quantized') and matrix.bnb_quantized:
+                        # For quantized matrices, try to update if possible
+                        try:
+                            if hasattr(matrix, 'weight') and matrix.weight is not None:
+                                with torch.no_grad():
+                                    matrix.weight.data = W_new
+                            else:
+                                print(f"* Warning: Cannot update quantized matrix of type {type(matrix)}")
+                        except Exception as e:
+                            print(f"* Warning: Failed to update quantized matrix: {e}")
+                    elif hasattr(matrix, '_data_impl') and hasattr(matrix._data_impl, '_value'):
+                        # For torchao quantized weights
+                        with torch.no_grad():
+                            matrix.copy_(W_new)
+                    else:
+                        # For regular weights
+                        with torch.no_grad():
+                            matrix.copy_(W_new)
 
     def _abliterate_impl(
         self,
@@ -693,8 +928,11 @@ class Model:
         self.model = target_model
         
         try:
-            # Apply the abliteration using the same logic as _abliterate_impl
-            self._abliterate_impl(refusal_directions, direction_index, parameters)
+            # Apply the abliteration using the appropriate method
+            if self.settings.use_norm_preserving_abliteration:
+                self._norm_preserving_abliterate_impl(refusal_directions, direction_index, parameters)
+            else:
+                self._abliterate_impl(refusal_directions, direction_index, parameters)
         finally:
             # Restore the original model
             self.model = original_model

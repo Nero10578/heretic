@@ -189,11 +189,23 @@ def run():
     good_residuals = model.get_residuals_batched(good_prompts)
     print("* Obtaining residuals for bad prompts...")
     bad_residuals = model.get_residuals_batched(bad_prompts)
-    refusal_directions = F.normalize(
+    
+    # Calculate initial refusal directions
+    initial_refusal_directions = F.normalize(
         bad_residuals.mean(dim=0) - good_residuals.mean(dim=0),
         p=2,
         dim=1,
     )
+    
+    # Apply biprojection if norm-preserving abliteration is enabled
+    if settings.use_norm_preserving_abliteration:
+        print("* Computing biprojected refusal directions...")
+        refusal_directions = model.compute_biprojected_directions(
+            initial_refusal_directions, good_residuals, bad_residuals
+        )
+        print("* Biprojected directions computed successfully")
+    else:
+        refusal_directions = initial_refusal_directions
 
     trial_index = 0
     start_time = time.perf_counter()
@@ -280,6 +292,10 @@ def run():
         print("* Using on-the-fly abliteration - no model reload needed")
             
         print("* Abliterating...")
+        if settings.use_norm_preserving_abliteration:
+            print(f"* Using norm-preserving biprojected abliteration (scale factor: {settings.abliteration_scale_factor})")
+        else:
+            print("* Using standard abliteration")
         model.abliterate(refusal_directions, direction_index, parameters)
         print_memory_usage("After abliteration: ")
         print("* Evaluating...")
@@ -429,6 +445,10 @@ def run():
                         print("Saving model...")
                          
                         # Apply final abliteration for saving
+                        if settings.use_norm_preserving_abliteration:
+                            print(f"* Applying norm-preserving biprojected abliteration (scale factor: {settings.abliteration_scale_factor})")
+                        else:
+                            print("* Applying standard abliteration")
                         model.apply_final_abliteration(
                             refusal_directions,
                             trial.user_attrs["direction_index"],
@@ -476,6 +496,10 @@ def run():
                         print("Uploading model...")
                          
                         # Apply final abliteration for saving
+                        if settings.use_norm_preserving_abliteration:
+                            print(f"* Applying norm-preserving biprojected abliteration (scale factor: {settings.abliteration_scale_factor})")
+                        else:
+                            print("* Applying standard abliteration")
                         model.apply_final_abliteration(
                             refusal_directions,
                             trial.user_attrs["direction_index"],
