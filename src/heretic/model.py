@@ -448,8 +448,8 @@ class Model:
             self._abliterate_via_cpu(refusal_directions, direction_index, parameters)
 
     def apply_final_abliteration(self, refusal_directions: Tensor, direction_index: float | None, parameters: dict[str, AbliterationParameters]):
-        """Apply abliteration to model weights for final use (chat/saving)."""
-        print("* Applying final abliteration to model weights...")
+        """Apply abliteration to model weights for final use (saving only)."""
+        print("* Applying final abliteration to model weights for saving...")
         if self.settings.use_torchao or self.settings.load_in_4bit or self.settings.load_in_8bit:
             # For quantized models, use CPU-based processing to save unquantized model
             self._abliterate_via_cpu(refusal_directions, direction_index, parameters)

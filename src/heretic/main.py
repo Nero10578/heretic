@@ -383,12 +383,13 @@ def run():
             print(f"Restoring model from trial [bold]{trial.user_attrs['index']}[/]...")
             print("* Reloading model...")
             model.reload_model()
-            print("* Applying final abliteration...")
-            model.apply_final_abliteration(
-                refusal_directions,
-                trial.user_attrs["direction_index"],
-                trial.user_attrs["parameters"],
-            )
+            print("* Setting up on-the-fly abliteration for chat...")
+            # Store parameters for on-the-fly abliteration during chat
+            model.abliteration_params = {
+                'refusal_directions': refusal_directions,
+                'direction_index': trial.user_attrs["direction_index"],
+                'parameters': trial.user_attrs["parameters"]
+            }
 
         while True:
             print()
@@ -428,30 +429,16 @@ def run():
                             continue
 
                         print("Saving model...")
+                         
+                        # Apply final abliteration for saving
+                        model.apply_final_abliteration(
+                            refusal_directions,
+                            trial.user_attrs["direction_index"],
+                            trial.user_attrs["parameters"],
+                        )
                         
-                        # If quantization was used, load the full precision model and apply abliteration to it
-                        if settings.load_in_4bit or settings.load_in_8bit:
-                            print("* Loading full precision model to CPU...")
-                            # Load the full precision model to CPU
-                            full_model = AutoModelForCausalLM.from_pretrained(
-                                settings.model,
-                                torch_dtype=torch.bfloat16,  # Use bfloat16 for full precision
-                                device_map="cpu",  # Force loading to CPU
-                                low_cpu_mem_usage=False,  # Disable to ensure full model is loaded
-                            )
-                            
-                            print("* Applying abliteration to full precision model...")
-                            # Apply the same abliteration to the full precision model
-                            model._apply_abliteration_to_model(full_model, refusal_directions, trial.user_attrs["direction_index"], trial.user_attrs["parameters"])
-                            
-                            print("* Saving full precision model...")
-                            full_model.save_pretrained(save_directory)
-                            # Clean up
-                            del full_model
-                            empty_cache()
-                        else:
-                            # Save the model as-is (full precision)
-                            model.model.save_pretrained(save_directory)
+                        # Save the model (now abliterated)
+                        model.model.save_pretrained(save_directory)
                         
                         model.tokenizer.save_pretrained(save_directory)
                         print(f"Model saved to [bold]{save_directory}[/].")
@@ -489,38 +476,20 @@ def run():
                         private = visibility == "Private"
 
                         print("Uploading model...")
+                         
+                        # Apply final abliteration for saving
+                        model.apply_final_abliteration(
+                            refusal_directions,
+                            trial.user_attrs["direction_index"],
+                            trial.user_attrs["parameters"],
+                        )
                         
-                        # If quantization was used, load the full precision model and apply abliteration to it
-                        if settings.load_in_4bit or settings.load_in_8bit:
-                            print("* Loading full precision model to CPU...")
-                            # Load the full precision model to CPU
-                            full_model = AutoModelForCausalLM.from_pretrained(
-                                settings.model,
-                                torch_dtype=torch.bfloat16,  # Use bfloat16 for full precision
-                                device_map="cpu",  # Force loading to CPU
-                                low_cpu_mem_usage=False,  # Disable to ensure full model is loaded
-                            )
-                            
-                            print("* Applying abliteration to full precision model...")
-                            # Apply the same abliteration to the full precision model
-                            model._apply_abliteration_to_model(full_model, refusal_directions, trial.user_attrs["direction_index"], trial.user_attrs["parameters"])
-                            
-                            print("* Uploading full precision model...")
-                            full_model.push_to_hub(
-                                repo_id,
-                                private=private,
-                                token=token,
-                            )
-                            # Clean up
-                            del full_model
-                            empty_cache()
-                        else:
-                            # Upload the model as-is (full precision)
-                            model.model.push_to_hub(
-                                repo_id,
-                                private=private,
-                                token=token,
-                            )
+                        # Upload the model (now abliterated)
+                        model.model.push_to_hub(
+                            repo_id,
+                            private=private,
+                            token=token,
+                        )
                         
                         model.tokenizer.push_to_hub(
                             repo_id,
@@ -576,28 +545,14 @@ def run():
 
                                 print("[bold]Assistant:[/] ", end="")
                                 
-                                # For quantized models, use the loaded quantized model for fast chat
-                                # For unquantized models, use the abliterated model
-                                if settings.use_torchao or settings.load_in_4bit or settings.load_in_8bit:
-                                    response = model.stream_chat_response(chat)
+                                # For all models, use on-the-fly abliteration for chat
+                                if model.abliteration_params is None:
+                                    # No abliteration parameters stored, need to ask user to select a trial
+                                    print("[yellow]No abliteration parameters available. Please select a trial first.[/]")
+                                    break
                                 else:
-                                    # For unquantized models, we need to apply abliteration first
-                                    if model.abliteration_params is None:
-                                        # No abliteration parameters stored, need to ask user to select a trial
-                                        print("[yellow]No abliteration parameters available. Please select a trial first.[/]")
-                                        break
-                                    else:
-                                        # Apply abliteration to the model for chat
-                                        temp_params = model.abliteration_params
-                                        model.abliteration_params = None  # Clear to avoid applying during chat
-                                        model.abliterate(
-                                            temp_params['refusal_directions'],
-                                            temp_params['direction_index'],
-                                            temp_params['parameters']
-                                        )
-                                        response = model.stream_chat_response(chat)
-                                        # Restore abliteration params for future use
-                                        model.abliteration_params = temp_params
+                                    # Use on-the-fly abliteration for chat
+                                    response = model.stream_chat_response(chat)
                                 
                                 chat.append({"role": "assistant", "content": response})
                             except (KeyboardInterrupt, EOFError):
