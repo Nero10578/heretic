@@ -128,9 +128,15 @@ class Model:
 
         # Check if quantization is requested
         if self.settings.load_in_4bit or self.settings.load_in_8bit:
+            # Reload the full precision model to CPU RAM for each trial
+            self.full_precision_model = AutoModelForCausalLM.from_pretrained(
+                self.settings.model,
+                torch_dtype=torch.bfloat16,
+                device_map="cpu",
+                low_cpu_mem_usage=False,
+            )
             # Don't reload the quantized model - it will be replaced with the abliterated version
             # from CPU RAM in the abliterate method
-            pass
         else:
             dtype = self.model.dtype if self.model else None
             self.model = AutoModelForCausalLM.from_pretrained(
