@@ -65,12 +65,60 @@ class AbliterationHook:
                 )
                 self.hooks.append(hook)
             
-            # Hook for MLP down projection
+            # Hook for MLP down projection - handle different MoE architectures
+            # Most dense models
             if hasattr(layer.mlp, 'down_proj'):
                 hook = layer.mlp.down_proj.register_forward_hook(
                     self.make_hook_fn(layer_index, 'mlp.down_proj')
                 )
                 self.hooks.append(hook)
+            
+            # Some MoE models (e.g. Qwen3)
+            if hasattr(layer.mlp, 'experts'):
+                try:
+                    for expert_idx, expert in enumerate(layer.mlp.experts):
+                        if hasattr(expert, 'down_proj'):
+                            hook = expert.down_proj.register_forward_hook(
+                                self.make_hook_fn(layer_index, 'mlp.down_proj')
+                            )
+                            self.hooks.append(hook)
+                except Exception:
+                    pass
+            
+            # Phi-3.5-MoE (and possibly others)
+            if hasattr(layer.mlp, 'block_sparse_moe'):
+                try:
+                    for expert_idx, expert in enumerate(layer.mlp.block_sparse_moe.experts):
+                        if hasattr(expert, 'w2'):
+                            hook = expert.w2.register_forward_hook(
+                                self.make_hook_fn(layer_index, 'mlp.down_proj')
+                            )
+                            self.hooks.append(hook)
+                except Exception:
+                    pass
+            
+            # GLM MoE models - handle both individual experts and shared experts
+            if hasattr(layer.mlp, 'experts'):
+                try:
+                    for expert_idx, expert in enumerate(layer.mlp.experts):
+                        if hasattr(expert, 'down_proj'):
+                            hook = expert.down_proj.register_forward_hook(
+                                self.make_hook_fn(layer_index, 'mlp.down_proj')
+                            )
+                            self.hooks.append(hook)
+                except Exception:
+                    pass
+            
+            # GLM MoE shared experts
+            if hasattr(layer.mlp, 'shared_experts'):
+                try:
+                    if hasattr(layer.mlp.shared_experts, 'down_proj'):
+                        hook = layer.mlp.shared_experts.down_proj.register_forward_hook(
+                            self.make_hook_fn(layer_index, 'mlp.down_proj')
+                        )
+                        self.hooks.append(hook)
+                except Exception:
+                    pass
         
         return self
         
