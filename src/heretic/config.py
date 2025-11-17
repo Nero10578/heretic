@@ -270,6 +270,113 @@ class Settings(BaseSettings):
         description="File path for saving Phase 2 performance statistics.",
     )
 
+    # === VLLM Inference Optimizations ===
+    
+    use_vllm_for_refusals: bool = Field(
+        default=True,
+        description="Use VLLM tensor parallel inference for refusal counting (dramatically faster).",
+    )
+    
+    enable_vllm_inference: bool = Field(
+        default=True,
+        description="Enable VLLM inference engine for optimized performance.",
+    )
+    
+    vllm_tensor_parallel_size: int = Field(
+        default=2,
+        description="Number of GPUs to use for VLLM tensor parallel inference.",
+        ge=1, le=8
+    )
+    
+    vllm_gpu_memory_utilization: float = Field(
+        default=0.85,
+        description="GPU memory utilization fraction for VLLM (0.1-0.95).",
+        ge=0.1, le=0.95
+    )
+    
+    vllm_max_model_len: int = Field(
+        default=8192,
+        description="Maximum model length for VLLM inference.",
+        ge=1024, le=32768
+    )
+    
+    vllm_batch_size: int = Field(
+        default=32,
+        description="Batch size for VLLM inference (optimized for refusal counting).",
+        ge=1, le=128
+    )
+    
+    vllm_dtype: str = Field(
+        default="auto",
+        description="Data type for VLLM inference (auto, float16, bfloat16, float32).",
+    )
+    
+    vllm_swap_space: int = Field(
+        default=4,
+        description="Swap space in GB for VLLM (helps with memory management).",
+        ge=0, le=16
+    )
+    
+    vllm_enable_chunked_prefill: bool = Field(
+        default=False,
+        description="Enable chunked prefill in VLLM (useful for very long sequences).",
+    )
+    
+    vllm_use_v2_block_manager: bool = Field(
+        default=True,
+        description="Use V2 block manager in VLLM (improved memory management).",
+    )
+    
+    vllm_max_num_batched_tokens: int = Field(
+        default=3200,
+        description="Maximum number of batched tokens for VLLM.",
+        ge=512, le=8192
+    )
+    
+    vllm_max_num_seqs: int = Field(
+        default=32,
+        description="Maximum number of sequences for VLLM.",
+        ge=1, le=128
+    )
+    
+    # VLLM LoRA Abliteration Support
+    vllm_enable_lora_abliteration: bool = Field(
+        default=False,
+        description="Enable VLLM LoRA support for on-the-fly abliteration (experimental).",
+    )
+    
+    vllm_lora_max_adapters: int = Field(
+        default=1,
+        description="Maximum number of LoRA adapters for VLLM.",
+        ge=1, le=8
+    )
+    
+    vllm_lora_extra_vocab_size: int = Field(
+        default=0,
+        description="Extra vocabulary size for VLLM LoRA adapters.",
+        ge=0, le=1024
+    )
+    
+    vllm_lora_dtype: str = Field(
+        default="auto",
+        description="Data type for VLLM LoRA adapters.",
+    )
+    
+    vllm_use_abliteration_for_refusals: bool = Field(
+        default=False,
+        description="Use abliteration when counting refusals with VLLM (for testing abliteration effectiveness).",
+    )
+    
+    vllm_use_hybrid_approach: bool = Field(
+        default=True,
+        description="Use hybrid approach: VLLM for evaluation, standard model for abliteration (recommended).",
+    )
+    
+    vllm_fallback_to_standard_on_abliteration: bool = Field(
+        default=True,
+        description="Fallback to standard model when abliteration is needed (maintains compatibility).",
+    )
+
     n_startup_trials: int = Field(
         default=60,
         description="Number of trials that use random sampling for the purpose of exploration.",

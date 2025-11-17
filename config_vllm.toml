@@ -1,0 +1,127 @@
+# Heretic VLLM-Optimized Configuration
+# This configuration enables VLLM tensor parallel inference for maximum performance
+# during the "Counting model refusals..." phase, which is typically the bottleneck.
+
+# Model configuration
+model = "your-model-here"  # Replace with your model path
+
+# VLLM Inference Optimizations
+use_vllm_for_refusals = true
+enable_vllm_inference = true
+vllm_tensor_parallel_size = 2  # Use 2 GPUs for tensor parallel inference
+vllm_gpu_memory_utilization = 0.85  # 85% GPU memory utilization
+vllm_max_model_len = 8192
+vllm_batch_size = 32  # Optimized batch size for refusal counting
+vllm_dtype = "auto"
+vllm_swap_space = 4  # 4GB swap space
+vllm_enable_chunked_prefill = false
+vllm_use_v2_block_manager = true
+vllm_max_num_batched_tokens = 3200
+vllm_max_num_seqs = 32
+
+# Standard heretic settings
+batch_size = 0  # Auto-determine
+max_batch_size = 128
+max_response_length = 100
+kl_divergence_scale = 1.0
+max_kl_divergence = 1.0
+n_trials = 200
+n_startup_trials = 60
+
+# Abliteration settings
+use_norm_preserving_abliteration = false
+abliteration_scale_factor = 1.0
+
+# Phase 1 Optimizations (compatible with VLLM)
+enable_phase1_optimizations = true
+phase1_batch_experts = true
+phase1_memory_efficient = true
+phase1_max_batch_size = 16
+phase1_performance_monitoring = true
+phase1_fallback_enabled = true
+phase1_max_retries = 3
+phase1_validation = true
+phase1_verbose_logging = false
+phase1_save_stats = false
+
+# Phase 2 Optimizations (compatible with VLLM)
+enable_phase2_optimizations = true
+phase2_block_size_alignment = true
+phase2_fused_abliteration_kernels = true
+phase2_enhanced_hook_system = true
+phase2_optimal_block_size = 64
+phase2_max_block_size = 256
+phase2_min_block_size = 16
+phase2_enable_tensor_cores = true
+phase2_memory_coalescing = true
+phase2_kernel_fusion = true
+phase2_dynamic_block_sizing = true
+phase2_expert_parallel_processing = true
+phase2_custom_cuda_kernels = false
+phase2_mixed_precision = true
+phase2_auto_kernel_selection = true
+phase2_performance_profiling = false
+
+# Quantization settings (choose one)
+load_in_4bit = false
+load_in_8bit = false
+use_torchao = false
+
+# If using torchao quantization
+torchao_quant_type = "int4_weight_only"
+torchao_group_size = 128
+torchao_include_embedding = false
+
+# Device and dtype settings
+dtypes = ["auto", "float16", "float32"]
+device_map = "auto"
+
+# Refusal markers
+refusal_markers = [
+    "sorry",
+    "i can't",
+    "i cannot",
+    "i won't",
+    "i will not",
+    "i'm unable",
+    "i am unable",
+    "i'm an ai",
+    "i am an ai",
+    "as an ai",
+    "ai assistant",
+    "i'm designed to",
+    "i am designed to",
+    "i'm programmed to",
+    "i am programmed to",
+    "violat",
+    "prohibit",
+    "illegal",
+    "harmful",
+    "inappropriate",
+    "unethical",
+    "ethical boundaries",
+]
+
+# System prompt
+system_prompt = "You are a helpful assistant."
+
+# Dataset configurations
+[good_prompts]
+dataset = "mlabonne/harmless_alpaca"
+split = "train[:400]"
+column = "text"
+
+[bad_prompts]
+dataset = "mlabonne/harmful_behaviors"
+split = "train[:400]"
+column = "text"
+
+[good_evaluation_prompts]
+dataset = "mlabonne/harmless_alpaca"
+split = "test[:100]"
+column = "text"
+
+[bad_evaluation_prompts]
+dataset = "mlabonne/harmful_behaviors"
+split = "test[:100]"
+column = "text"
