@@ -180,6 +180,96 @@ class Settings(BaseSettings):
         description="File path for saving Phase 1 performance statistics.",
     )
 
+    # === Phase 2 MoE Optimizations ===
+    
+    enable_phase2_optimizations: bool = Field(
+        default=True,
+        description="Enable Phase 2 MoE optimizations for advanced performance gains.",
+    )
+    
+    phase2_block_size_alignment: bool = Field(
+        default=True,
+        description="Enable block-size alignment for optimal GPU kernel performance.",
+    )
+    
+    phase2_fused_abliteration_kernels: bool = Field(
+        default=True,
+        description="Enable fused abliteration kernels for maximum GPU utilization.",
+    )
+    
+    phase2_enhanced_hook_system: bool = Field(
+        default=True,
+        description="Enable enhanced hook system with MoE-aware processing.",
+    )
+    
+    phase2_optimal_block_size: int = Field(
+        default=64,
+        description="Optimal block size for GPU operations.",
+        ge=16, le=512
+    )
+    
+    phase2_max_block_size: int = Field(
+        default=256,
+        description="Maximum block size for GPU operations.",
+        ge=64, le=1024
+    )
+    
+    phase2_min_block_size: int = Field(
+        default=16,
+        description="Minimum block size for GPU operations.",
+        ge=8, le=64
+    )
+    
+    phase2_enable_tensor_cores: bool = Field(
+        default=True,
+        description="Enable tensor core utilization for modern GPUs.",
+    )
+    
+    phase2_memory_coalescing: bool = Field(
+        default=True,
+        description="Enable memory coalescing for improved memory bandwidth.",
+    )
+    
+    phase2_kernel_fusion: bool = Field(
+        default=True,
+        description="Enable kernel fusion for reduced kernel launch overhead.",
+    )
+    
+    phase2_dynamic_block_sizing: bool = Field(
+        default=True,
+        description="Enable dynamic block sizing based on tensor dimensions.",
+    )
+    
+    phase2_expert_parallel_processing: bool = Field(
+        default=True,
+        description="Enable expert parallel processing across GPU streams.",
+    )
+    
+    phase2_custom_cuda_kernels: bool = Field(
+        default=False,
+        description="Enable custom CUDA kernels for abliteration operations.",
+    )
+    
+    phase2_mixed_precision: bool = Field(
+        default=True,
+        description="Enable mixed precision for Phase 2 operations.",
+    )
+    
+    phase2_auto_kernel_selection: bool = Field(
+        default=True,
+        description="Enable automatic kernel selection based on hardware.",
+    )
+    
+    phase2_performance_profiling: bool = Field(
+        default=False,
+        description="Enable performance profiling for Phase 2 operations.",
+    )
+    
+    phase2_stats_file: str = Field(
+        default="phase2_performance_stats.json",
+        description="File path for saving Phase 2 performance statistics.",
+    )
+
     n_startup_trials: int = Field(
         default=60,
         description="Number of trials that use random sampling for the purpose of exploration.",

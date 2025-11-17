@@ -158,3 +158,72 @@ phase1_save_stats = false
 
 # File path for saving Phase 1 performance statistics.
 phase1_stats_file = "phase1_performance_stats.json"
+
+# === Phase 2 MoE Optimizations ===
+
+# Enable Phase 2 MoE optimizations for advanced performance gains.
+# When enabled, heretic will use block-size alignment, fused kernels, and enhanced hooks.
+enable_phase2_optimizations = true
+
+# Enable block-size alignment for optimal GPU kernel performance.
+# When enabled, tensor dimensions are aligned to optimal block sizes for GPU operations.
+phase2_block_size_alignment = true
+
+# Enable fused abliteration kernels for maximum GPU utilization.
+# When enabled, custom fused kernels are used for abliteration operations.
+phase2_fused_abliteration_kernels = true
+
+# Enable enhanced hook system with MoE-aware processing.
+# When enabled, hooks are optimized for MoE models with on-the-fly optimization.
+phase2_enhanced_hook_system = true
+
+# Optimal block size for GPU operations (default: 64).
+# This value is used for aligning tensor dimensions to optimal GPU block sizes.
+phase2_optimal_block_size = 64
+
+# Maximum block size for GPU operations (default: 256).
+# This prevents excessive memory usage with very large block sizes.
+phase2_max_block_size = 256
+
+# Minimum block size for GPU operations (default: 16).
+# This ensures minimum efficiency for small operations.
+phase2_min_block_size = 16
+
+# Enable tensor core utilization for modern GPUs.
+# When enabled, operations are optimized for tensor core utilization.
+phase2_enable_tensor_cores = true
+
+# Enable memory coalescing for improved memory bandwidth.
+# When enabled, memory access patterns are optimized for coalescing.
+phase2_memory_coalescing = true
+
+# Enable kernel fusion for reduced kernel launch overhead.
+# When enabled, multiple operations are fused into single kernels.
+phase2_kernel_fusion = true
+
+# Enable dynamic block sizing based on tensor dimensions.
+# When enabled, block sizes are dynamically adjusted based on input tensor sizes.
+phase2_dynamic_block_sizing = true
+
+# Enable expert parallel processing across GPU streams.
+# When enabled, different experts are processed in parallel on separate GPU streams.
+phase2_expert_parallel_processing = true
+
+# Enable custom CUDA kernels for abliteration operations.
+# When enabled, custom CUDA kernels are used for maximum performance.
+phase2_custom_cuda_kernels = false
+
+# Enable mixed precision for Phase 2 operations.
+# When enabled, mixed precision is used for improved performance and memory efficiency.
+phase2_mixed_precision = true
+
+# Enable automatic kernel selection based on hardware.
+# When enabled, the best kernel implementation is automatically selected.
+phase2_auto_kernel_selection = true
+
+# Enable performance profiling for Phase 2 operations.
+# When enabled, detailed performance profiling is performed.
+phase2_performance_profiling = false
+
+# File path for saving Phase 2 performance statistics.
+phase2_stats_file = "phase2_performance_stats.json"

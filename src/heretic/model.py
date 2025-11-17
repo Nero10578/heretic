@@ -22,6 +22,7 @@ from transformers.generation.utils import GenerateOutput
 
 from .config import Settings
 from .utils import batchify, empty_cache, print, print_memory_usage
+from .moe_utils_phase2 import Phase2Optimizer
 
 
 # === Phase 1 MoE Optimization Utilities ===
@@ -397,6 +398,19 @@ class Model:
             print(f"* Phase 1 optimizations enabled")
             print(f"* Expert batching: {getattr(settings, 'phase1_batch_experts', True)}")
             print(f"* Memory efficient: {getattr(settings, 'phase1_memory_efficient', True)}")
+        
+        # Phase 2 optimization initialization
+        self.enable_phase2_optimizations = getattr(settings, 'enable_phase2_optimizations', True)
+        self.phase2_optimizer = None
+        
+        if self.enable_phase2_optimizations:
+            print(f"* Phase 2 optimizations enabled")
+            print(f"* Block-size alignment: {getattr(settings, 'phase2_block_size_alignment', True)}")
+            print(f"* Fused abliteration kernels: {getattr(settings, 'phase2_fused_abliteration_kernels', True)}")
+            print(f"* Enhanced hook system: {getattr(settings, 'phase2_enhanced_hook_system', True)}")
+            
+            # Initialize Phase 2 optimizer
+            self.phase2_optimizer = Phase2Optimizer(settings)
 
         # Check if torchao quantization is requested
         if settings.use_torchao:
@@ -602,8 +616,10 @@ class Model:
         return self.model.model.layers
 
     def get_layer_matrices(self, layer_index: int) -> dict[str, list[Tensor]]:
-        """Get layer matrices with Phase 1 MoE optimizations."""
-        if self.enable_phase1_optimizations:
+        """Get layer matrices with Phase 1 and Phase 2 MoE optimizations."""
+        if self.enable_phase2_optimizations and self.phase2_optimizer is not None:
+            return self._get_layer_matrices_phase2(layer_index)
+        elif self.enable_phase1_optimizations:
             return self._get_layer_matrices_phase1(layer_index)
         else:
             return self._get_layer_matrices_original(layer_index)
@@ -652,6 +668,67 @@ class Model:
         
         # Ensure we have at least one MLP down-projection
         if "mlp.down_proj" not in matrices and "mlp.down_proj.batched" not in matrices:
+            with suppress(Exception):
+                try_add("mlp.down_proj", layer.mlp.down_proj.weight)
+
+        return matrices
+    
+    def _get_layer_matrices_phase2(self, layer_index: int) -> dict[str, list[Tensor]]:
+        """Phase 2 optimized layer matrix processing with block-size alignment and fused kernels."""
+        layer = self.get_layers()[layer_index]
+        matrices = {}
+
+        def try_add(component: str, matrix: Any):
+            assert torch.is_tensor(matrix)
+            if component not in matrices:
+                matrices[component] = []
+            matrices[component].append(matrix)
+
+        # Standard attention processing
+        try_add("attn.o_proj", layer.self_attn.o_proj.weight)
+
+        # Check if this is an MoE layer and apply Phase 2 optimizations
+        if detect_moe_layer(layer):
+            expert_weights, shared_expert_weights = get_expert_weights_from_layer(layer)
+            
+            if expert_weights:
+                # Apply Phase 2 optimizations to expert weights
+                try:
+                    # Use Phase 2 optimizer for advanced processing
+                    optimized_experts, original_sizes = self.phase2_optimizer.optimize_expert_weights(expert_weights)
+                    matrices["mlp.down_proj.phase2_optimized"] = [optimized_experts]
+                    
+                    # Store original sizes for potential restoration
+                    matrices["mlp.down_proj.original_sizes"] = original_sizes
+                    
+                except Exception as e:
+                    # Fallback to Phase 1 processing if Phase 2 fails
+                    if getattr(self.settings, 'phase1_fallback_enabled', True):
+                        try:
+                            batched_experts = batch_expert_weights(expert_weights)
+                            matrices["mlp.down_proj.batched"] = [batched_experts]
+                        except ValueError:
+                            # Final fallback to individual processing
+                            for i, expert_weight in enumerate(expert_weights):
+                                matrices[f"mlp.down_proj.expert_{i}"] = [expert_weight]
+                    else:
+                        raise e
+            
+            if shared_expert_weights is not None:
+                # Apply Phase 2 optimizations to shared expert
+                if self.phase2_optimizer and self.settings.phase2_fused_abliteration_kernels:
+                    # Align shared expert for optimal processing
+                    aligned_shared = self.phase2_optimizer.block_aligner.align_tensor(shared_expert_weights)
+                    matrices["mlp.shared_down_proj.phase2_aligned"] = [aligned_shared]
+                else:
+                    matrices["mlp.shared_down_proj"] = [shared_expert_weights]
+        else:
+            # Fallback to standard MLP processing
+            with suppress(Exception):
+                try_add("mlp.down_proj", layer.mlp.down_proj.weight)
+
+        # Ensure we have at least one MLP down-projection
+        if "mlp.down_proj" not in matrices and "mlp.down_proj.batched" not in matrices and "mlp.down_proj.phase2_optimized" not in matrices:
             with suppress(Exception):
                 try_add("mlp.down_proj", layer.mlp.down_proj.weight)
 
@@ -1454,3 +1531,70 @@ class Model:
         except Exception as e:
             if getattr(self.settings, 'phase1_verbose_logging', False):
                 print(f"* Warning: Could not save Phase 1 stats to {filename}: {e}")
+    
+    def get_phase2_performance_stats(self) -> dict:
+        """Get Phase 2 performance statistics."""
+        if self.phase2_optimizer is None:
+            return {
+                'phase2_optimizations_enabled': False,
+                'error': 'Phase 2 optimizer not initialized'
+            }
+        
+        stats = self.phase2_optimizer.get_performance_stats()
+        
+        # Add configuration info
+        stats['configuration'] = {
+            'phase2_optimizations_enabled': self.enable_phase2_optimizations,
+            'block_size_alignment': getattr(self.settings, 'phase2_block_size_alignment', True),
+            'fused_abliteration_kernels': getattr(self.settings, 'phase2_fused_abliteration_kernels', True),
+            'enhanced_hook_system': getattr(self.settings, 'phase2_enhanced_hook_system', True),
+            'optimal_block_size': getattr(self.settings, 'phase2_optimal_block_size', 64),
+            'tensor_cores_enabled': getattr(self.settings, 'phase2_enable_tensor_cores', True),
+            'memory_coalescing': getattr(self.settings, 'phase2_memory_coalescing', True),
+            'kernel_fusion': getattr(self.settings, 'phase2_kernel_fusion', True),
+            'dynamic_block_sizing': getattr(self.settings, 'phase2_dynamic_block_sizing', True),
+            'expert_parallel_processing': getattr(self.settings, 'phase2_expert_parallel_processing', True),
+        }
+        
+        return stats
+    
+    def reset_phase2_stats(self):
+        """Reset Phase 2 performance statistics."""
+        if self.phase2_optimizer is not None:
+            self.phase2_optimizer.reset_performance_stats()
+    
+    def save_phase2_stats(self, filename: str = None):
+        """Save Phase 2 performance statistics to file."""
+        if self.phase2_optimizer is None:
+            return
+        
+        if filename is None:
+            filename = getattr(self.settings, 'phase2_stats_file', 'phase2_performance_stats.json')
+        
+        stats = self.get_phase2_performance_stats()
+        
+        try:
+            import json
+            with open(filename, 'w') as f:
+                json.dump(stats, f, indent=2)
+            
+            if getattr(self.settings, 'phase2_performance_profiling', False):
+                print(f"* Phase 2 performance stats saved to {filename}")
+                
+        except Exception as e:
+            if getattr(self.settings, 'phase2_performance_profiling', False):
+                print(f"* Warning: Could not save Phase 2 stats to {filename}: {e}")
+    
+    def get_combined_performance_stats(self) -> dict:
+        """Get combined Phase 1 and Phase 2 performance statistics."""
+        combined_stats = {
+            'phase1': self.get_phase1_performance_stats(),
+            'phase2': self.get_phase2_performance_stats(),
+            'summary': {
+                'total_optimizations_enabled': self.enable_phase1_optimizations and self.enable_phase2_optimizations,
+                'phase1_active': self.enable_phase1_optimizations,
+                'phase2_active': self.enable_phase2_optimizations and self.phase2_optimizer is not None,
+            }
+        }
+        
+        return combined_stats
