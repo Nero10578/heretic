@@ -102,6 +102,17 @@ moe_use_quantized_kernels = true
 moe_max_batch_size = 1024
 ```
 
+### Dependencies
+
+No additional pip installations are required! The optimizations use only existing dependencies:
+
+- **PyTorch**: Already required by Heretic for tensor operations
+- **bitsandbytes**: Already used if you have quantized models
+- **torchao**: Already used if you have torchao-quantized models
+- **Standard library**: `time`, `logging`, `dataclasses` (all built-in)
+
+The optimizations are designed to work with your existing Heretic installation without any additional dependencies.
+
 ### Configuration Options Explained
 
 - **`moe_enable_optimizations`** (boolean, default: false)
@@ -150,6 +161,15 @@ python -m heretic.test_moe_optimizations
 ```
 
 ## Technical Details
+
+### VLLM-Inspired Optimizations
+
+These optimizations are directly based on VLLM's approach to handling MoE models, specifically borrowing techniques from `vllm/model_executor/layers/fused_moe/moe_torch_iterative.py`:
+
+1. **Token Batching Strategy**: VLLM groups tokens by expert assignment to maximize GPU utilization
+2. **Block-wise Processing**: VLLM uses configurable block sizes for optimal memory access patterns
+3. **Vectorized Operations**: VLLM replaces sequential loops with efficient tensor operations
+4. **Memory Layout Optimization**: VLLM strategically arranges tensors for cache efficiency
 
 ### Token Alignment Algorithm
 
