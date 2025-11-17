@@ -617,9 +617,9 @@ class Model:
 
     def get_layer_matrices(self, layer_index: int) -> dict[str, list[Tensor]]:
         """Get layer matrices with Phase 1 and Phase 2 MoE optimizations."""
-        if self.enable_phase2_optimizations and self.phase2_optimizer is not None:
-            return self._get_layer_matrices_phase2(layer_index)
-        elif self.enable_phase1_optimizations:
+        # IMPORTANT: Phase 2 optimizations should NOT interfere with KL divergence calculations
+        # Only use Phase 2 for abliteration, not for probability calculations
+        if self.enable_phase1_optimizations:
             return self._get_layer_matrices_phase1(layer_index)
         else:
             return self._get_layer_matrices_original(layer_index)
@@ -675,6 +675,67 @@ class Model:
     
     def _get_layer_matrices_phase2(self, layer_index: int) -> dict[str, list[Tensor]]:
         """Phase 2 optimized layer matrix processing with block-size alignment and fused kernels."""
+        layer = self.get_layers()[layer_index]
+        matrices = {}
+
+        def try_add(component: str, matrix: Any):
+            assert torch.is_tensor(matrix)
+            if component not in matrices:
+                matrices[component] = []
+            matrices[component].append(matrix)
+
+        # Standard attention processing
+        try_add("attn.o_proj", layer.self_attn.o_proj.weight)
+
+        # Check if this is an MoE layer and apply Phase 2 optimizations
+        if detect_moe_layer(layer):
+            expert_weights, shared_expert_weights = get_expert_weights_from_layer(layer)
+            
+            if expert_weights:
+                # Apply Phase 2 optimizations to expert weights
+                try:
+                    # Use Phase 2 optimizer for advanced processing
+                    optimized_experts, original_sizes = self.phase2_optimizer.optimize_expert_weights(expert_weights)
+                    matrices["mlp.down_proj.phase2_optimized"] = [optimized_experts]
+                    
+                    # Store original sizes for potential restoration
+                    matrices["mlp.down_proj.original_sizes"] = original_sizes
+                    
+                except Exception as e:
+                    # Fallback to Phase 1 processing if Phase 2 fails
+                    if getattr(self.settings, 'phase1_fallback_enabled', True):
+                        try:
+                            batched_experts = batch_expert_weights(expert_weights)
+                            matrices["mlp.down_proj.batched"] = [batched_experts]
+                        except ValueError:
+                            # Final fallback to individual processing
+                            for i, expert_weight in enumerate(expert_weights):
+                                matrices[f"mlp.down_proj.expert_{i}"] = [expert_weight]
+                    else:
+                        raise e
+            
+            if shared_expert_weights is not None:
+                # Apply Phase 2 optimizations to shared expert
+                if self.phase2_optimizer and self.settings.phase2_fused_abliteration_kernels:
+                    # Align shared expert for optimal processing
+                    aligned_shared = self.phase2_optimizer.block_aligner.align_tensor(shared_expert_weights)
+                    matrices["mlp.shared_down_proj.phase2_aligned"] = [aligned_shared]
+                else:
+                    matrices["mlp.shared_down_proj"] = [shared_expert_weights]
+        else:
+            # Fallback to standard MLP processing
+            with suppress(Exception):
+                try_add("mlp.down_proj", layer.mlp.down_proj.weight)
+
+        # Ensure we have at least one MLP down-projection
+        if "mlp.down_proj" not in matrices and "mlp.down_proj.batched" not in matrices and "mlp.down_proj.phase2_optimized" not in matrices:
+            with suppress(Exception):
+                try_add("mlp.down_proj", layer.mlp.down_proj.weight)
+
+        return matrices
+    
+    def _get_layer_matrices_phase2_for_abliteration(self, layer_index: int) -> dict[str, list[Tensor]]:
+        """Phase 2 optimized layer matrix processing specifically for abliteration (not for KL divergence)."""
         layer = self.get_layers()[layer_index]
         matrices = {}
 
@@ -993,7 +1054,13 @@ class Model:
             harmless_mean = None
 
         for layer_index in range(len(self.get_layers())):
-            for component, matrices in self.get_layer_matrices(layer_index).items():
+            # Use Phase 2 optimized matrices for abliteration if available
+            if self.enable_phase2_optimizations and self.phase2_optimizer is not None:
+                matrices = self._get_layer_matrices_phase2_for_abliteration(layer_index)
+            else:
+                matrices = self.get_layer_matrices(layer_index)
+            
+            for component, matrices_list in matrices.items():
                 params = parameters[component]
 
                 distance = abs(layer_index - params.max_weight_position)
@@ -1032,7 +1099,7 @@ class Model:
                     refined_refusal_dir = refusal_dir - projection_scalar * harmless_normalized
                     refusal_dir = refined_refusal_dir
 
-                for matrix in matrices:
+                for matrix in matrices_list:
                     # Apply the norm-preserving modification matching the original implementation
                     modified_matrix = self.modify_tensor_norm_preserved(
                         matrix, refusal_dir, scale_factor * weight
@@ -1128,7 +1195,13 @@ class Model:
         # Note that some implementations of abliteration also orthogonalize
         # the embedding matrix, but it's unclear if that has any benefits.
         for layer_index in range(len(self.get_layers())):
-            for component, matrices in self.get_layer_matrices(layer_index).items():
+            # Use Phase 2 optimized matrices for abliteration if available
+            if self.enable_phase2_optimizations and self.phase2_optimizer is not None:
+                matrices = self._get_layer_matrices_phase2_for_abliteration(layer_index)
+            else:
+                matrices = self.get_layer_matrices(layer_index)
+            
+            for component, matrices_list in matrices.items():
                 params = parameters[component]
 
                 distance = abs(layer_index - params.max_weight_position)
@@ -1158,7 +1231,7 @@ class Model:
                     layer_refusal_direction,
                 ).to(self.model.dtype)
 
-                for matrix in matrices:
+                for matrix in matrices_list:
                     # Ensure projector is on the same device as the matrix
                     projector_device = projector.to(matrix.device)
                     
