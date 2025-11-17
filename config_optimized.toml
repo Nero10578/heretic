@@ -1,4 +1,7 @@
+# Optimized configuration for VLLM-inspired MoE enhancements
 # Copy this file to config.toml and edit the configuration to your liking.
+
+# === Original Configuration ===
 
 # Load the model in 4-bit precision using bitsandbytes to save VRAM.
 # Note: This requires the bitsandbytes library to be installed.
@@ -22,7 +25,6 @@ torchao_group_size = 128
 
 # Include embedding layers in torchao quantization.
 torchao_include_embedding = false
-
 
 # List of PyTorch dtypes to try when loading model tensors.
 # If loading with a dtype fails, the next dtype in the list will be tried.
@@ -115,46 +117,124 @@ dataset = "mlabonne/harmful_behaviors"
 split = "test[:100]"
 column = "text"
 
-# === Phase 1 MoE Optimizations ===
+# === VLLM-Inspired MoE Optimizations ===
 
-# Enable Phase 1 MoE optimizations for immediate performance gains.
-# When enabled, heretic will use expert batching and memory optimizations.
-enable_phase1_optimizations = true
+# Enable VLLM-inspired MoE optimizations for faster processing.
+# When enabled, heretic will use expert batching, fused kernels, and memory optimization.
+enable_moe_optimizations = true
+
+# Block size for MoE expert alignment (GPU optimization).
+# This should be a power of 2 between 16 and 256 for optimal GPU performance.
+# Smaller values use less memory but may be slower, larger values use more memory but are faster.
+moe_block_size = 64
+
+# Use fused kernels for MoE expert abliteration.
+# When enabled, custom fused operations are used for maximum performance.
+moe_fused_abliteration = true
+
+# Cache expert computations for reuse across batches.
+# When enabled, frequently accessed computations are cached to reduce redundant work.
+moe_cache_experts = true
 
 # Process multiple experts simultaneously in batches.
 # When enabled, experts are processed in batches rather than individually for better GPU utilization.
-phase1_batch_experts = true
+moe_batch_experts = true
+
+# Chunk size for processing large MoE models.
+# This controls how many tokens are processed in each chunk to balance memory usage and performance.
+moe_chunk_size = 4096
+
+# Maximum number of experts to process in a single batch.
+# This prevents memory issues with very large MoE models by limiting batch size.
+moe_max_experts_per_batch = 8
 
 # Use memory-efficient processing for large MoE models.
 # When enabled, additional memory optimizations are applied at the cost of some performance.
-phase1_memory_efficient = true
+moe_memory_efficient = true
 
-# Maximum batch size for Phase 1 optimizations.
-# This prevents memory issues with very large MoE models by limiting batch size.
-phase1_max_batch_size = 16
+# === Advanced MoE Settings ===
 
-# Enable performance monitoring for Phase 1 optimizations.
+# Enable norm-preserving biprojected abliteration technique.
+# This advanced technique maintains model norms while ablating refusal directions.
+use_norm_preserving_abliteration = false
+
+# Scaling factor for abliteration strength (alpha parameter in norm-preserving abliteration).
+# Higher values result in stronger abliteration but may affect model quality.
+abliteration_scale_factor = 1.0
+
+# Enable automatic block size optimization.
+# When enabled, the optimal block size is automatically determined based on model characteristics.
+moe_auto_block_size = true
+
+# Minimum block size for automatic optimization.
+moe_min_block_size = 16
+
+# Maximum block size for automatic optimization.
+moe_max_block_size = 256
+
+# Enable expert load balancing.
+# When enabled, tokens are distributed more evenly across experts for better performance.
+moe_load_balancing = true
+
+# Threshold for expert load balancing (0.0-1.0).
+# Higher values result in more aggressive load balancing.
+moe_load_balance_threshold = 0.8
+
+# Enable performance monitoring.
 # When enabled, detailed performance statistics are collected and reported.
-phase1_performance_monitoring = true
+moe_performance_monitoring = true
+
+# === GPU-Specific Optimizations ===
+
+# Enable CUDA-specific optimizations.
+# When enabled, CUDA-specific kernels and optimizations are used.
+moe_cuda_optimizations = true
+
+# Enable mixed precision processing.
+# When enabled, mixed precision is used for better performance on supported hardware.
+moe_mixed_precision = true
+
+# Enable tensor cores utilization.
+# When enabled, tensor cores are utilized for better performance on supported hardware.
+moe_use_tensor_cores = true
+
+# Memory pool size for MoE operations (in MB).
+# This controls the size of the memory pool used for MoE operations.
+moe_memory_pool_size = 1024
+
+# === Debug and Development Settings ===
+
+# Enable verbose logging for MoE operations.
+# When enabled, detailed logs are printed for debugging MoE operations.
+moe_verbose_logging = false
+
+# Enable performance profiling.
+# When enabled, detailed performance profiling data is collected.
+moe_profiling = false
+
+# Save performance statistics to file.
+# When enabled, performance statistics are saved to a file for analysis.
+moe_save_stats = false
+
+# File path for saving performance statistics.
+moe_stats_file = "moe_performance_stats.json"
+
+# Enable validation of MoE operations.
+# When enabled, additional validation checks are performed to ensure correctness.
+moe_validation = true
+
+# === Compatibility Settings ===
 
 # Fallback to original implementation if optimization fails.
 # When enabled, the system falls back to the original implementation if optimizations fail.
-phase1_fallback_enabled = true
+moe_fallback_enabled = true
 
-# Maximum number of retry attempts for Phase 1 operations.
-phase1_max_retries = 3
+# Maximum number of retry attempts for MoE operations.
+moe_max_retries = 3
 
-# Enable validation of Phase 1 operations.
-# When enabled, additional validation checks are performed to ensure correctness.
-phase1_validation = true
+# Timeout for MoE operations (in seconds).
+moe_operation_timeout = 300
 
-# Enable verbose logging for Phase 1 operations.
-# When enabled, detailed logs are printed for debugging Phase 1 operations.
-phase1_verbose_logging = false
-
-# Save Phase 1 performance statistics to file.
-# When enabled, performance statistics are saved to a file for analysis.
-phase1_save_stats = false
-
-# File path for saving Phase 1 performance statistics.
-phase1_stats_file = "phase1_performance_stats.json"
+# Enable compatibility mode for older models.
+# When enabled, compatibility mode is used for older model architectures.
+moe_compatibility_mode = false

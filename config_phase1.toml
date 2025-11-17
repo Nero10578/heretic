@@ -1,4 +1,7 @@
+# Phase 1 optimized configuration for heretic with essential MoE enhancements
 # Copy this file to config.toml and edit the configuration to your liking.
+
+# === Original Configuration (Unchanged) ===
 
 # Load the model in 4-bit precision using bitsandbytes to save VRAM.
 # Note: This requires the bitsandbytes library to be installed.
@@ -22,7 +25,6 @@ torchao_group_size = 128
 
 # Include embedding layers in torchao quantization.
 torchao_include_embedding = false
-
 
 # List of PyTorch dtypes to try when loading model tensors.
 # If loading with a dtype fails, the next dtype in the list will be tried.
@@ -137,6 +139,18 @@ phase1_max_batch_size = 16
 # When enabled, detailed performance statistics are collected and reported.
 phase1_performance_monitoring = true
 
+# === Advanced Phase 1 Settings ===
+
+# Enable norm-preserving biprojected abliteration technique.
+# This advanced technique maintains model norms while ablating refusal directions.
+use_norm_preserving_abliteration = false
+
+# Scaling factor for abliteration strength (alpha parameter in norm-preserving abliteration).
+# Higher values result in stronger abliteration but may affect model quality.
+abliteration_scale_factor = 1.0
+
+# === Compatibility and Fallback Settings ===
+
 # Fallback to original implementation if optimization fails.
 # When enabled, the system falls back to the original implementation if optimizations fail.
 phase1_fallback_enabled = true
@@ -147,6 +161,8 @@ phase1_max_retries = 3
 # Enable validation of Phase 1 operations.
 # When enabled, additional validation checks are performed to ensure correctness.
 phase1_validation = true
+
+# === Debug Settings ===
 
 # Enable verbose logging for Phase 1 operations.
 # When enabled, detailed logs are printed for debugging Phase 1 operations.

@@ -121,6 +121,65 @@ class Settings(BaseSettings):
         description="Scaling factor for abliteration strength (alpha parameter in norm-preserving abliteration).",
     )
 
+    # === Phase 1 MoE Optimizations ===
+    
+    enable_phase1_optimizations: bool = Field(
+        default=True,
+        description="Enable Phase 1 MoE optimizations for immediate performance gains.",
+    )
+    
+    phase1_batch_experts: bool = Field(
+        default=True,
+        description="Process multiple experts simultaneously in batches.",
+    )
+    
+    phase1_memory_efficient: bool = Field(
+        default=True,
+        description="Use memory-efficient processing for large MoE models.",
+    )
+    
+    phase1_max_batch_size: int = Field(
+        default=16,
+        description="Maximum batch size for Phase 1 optimizations.",
+        ge=1, le=64
+    )
+    
+    phase1_performance_monitoring: bool = Field(
+        default=True,
+        description="Enable performance monitoring for Phase 1 optimizations.",
+    )
+    
+    phase1_fallback_enabled: bool = Field(
+        default=True,
+        description="Fallback to original implementation if optimization fails.",
+    )
+    
+    phase1_max_retries: int = Field(
+        default=3,
+        description="Maximum number of retry attempts for Phase 1 operations.",
+        ge=1, le=10
+    )
+    
+    phase1_validation: bool = Field(
+        default=True,
+        description="Enable validation of Phase 1 operations.",
+    )
+    
+    phase1_verbose_logging: bool = Field(
+        default=False,
+        description="Enable verbose logging for Phase 1 operations.",
+    )
+    
+    phase1_save_stats: bool = Field(
+        default=False,
+        description="Save Phase 1 performance statistics to file.",
+    )
+    
+    phase1_stats_file: str = Field(
+        default="phase1_performance_stats.json",
+        description="File path for saving Phase 1 performance statistics.",
+    )
+
     n_startup_trials: int = Field(
         default=60,
         description="Number of trials that use random sampling for the purpose of exploration.",

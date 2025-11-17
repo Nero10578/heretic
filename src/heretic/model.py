@@ -4,7 +4,7 @@
 import math
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, List, Optional
 
 import torch
 import torch.nn.functional as F
@@ -22,6 +22,156 @@ from transformers.generation.utils import GenerateOutput
 
 from .config import Settings
 from .utils import batchify, empty_cache, print, print_memory_usage
+
+
+# === Phase 1 MoE Optimization Utilities ===
+
+def batch_expert_weights(expert_weights_list: List[torch.Tensor]) -> torch.Tensor:
+    """Batch expert weights for efficient processing."""
+    if not expert_weights_list:
+        raise ValueError("expert_weights_list cannot be empty")
+    
+    # Ensure all weights have the same shape
+    shape = expert_weights_list[0].shape
+    for i, weights in enumerate(expert_weights_list):
+        if weights.shape != shape:
+            raise ValueError(f"Expert {i} has shape {weights.shape}, expected {shape}")
+    
+    # Stack along new dimension for batched processing
+    return torch.stack(expert_weights_list, dim=0)
+
+
+def detect_moe_layer(layer) -> bool:
+    """Detect if a layer is an MoE layer."""
+    if hasattr(layer, 'mlp'):
+        mlp = layer.mlp
+        
+        # GLM MoE with experts and shared experts
+        if hasattr(mlp, 'experts') and hasattr(mlp, 'shared_experts'):
+            return True
+        
+        # Standard MoE (Mixtral, Qwen3, etc.)
+        if hasattr(mlp, 'experts'):
+            return True
+        
+        # Phi-3.5-MoE style
+        if hasattr(layer, 'block_sparse_moe') and hasattr(layer.block_sparse_moe, 'experts'):
+            return True
+        
+        # gpt-oss MoE style
+        if hasattr(mlp, 'experts') and hasattr(mlp.experts, 'down_proj'):
+            return True
+    
+    return False
+
+
+def get_expert_weights_from_layer(layer) -> tuple[List[torch.Tensor], Optional[torch.Tensor]]:
+    """Extract expert weights from an MoE layer."""
+    expert_weights = []
+    shared_expert_weights = None
+    
+    if hasattr(layer, 'mlp'):
+        mlp = layer.mlp
+        
+        # GLM MoE models
+        if hasattr(mlp, 'experts') and hasattr(mlp, 'shared_experts'):
+            for expert in mlp.experts:
+                if hasattr(expert, 'down_proj'):
+                    expert_weights.append(expert.down_proj.weight)
+            
+            if hasattr(mlp.shared_experts, 'down_proj'):
+                shared_expert_weights = mlp.shared_experts.down_proj.weight
+        
+        # Standard MoE models
+        elif hasattr(mlp, 'experts'):
+            for expert in mlp.experts:
+                if hasattr(expert, 'down_proj'):
+                    expert_weights.append(expert.down_proj.weight)
+                elif hasattr(expert, 'w2'):
+                    expert_weights.append(expert.w2.weight)
+        
+        # Phi-3.5-MoE style
+        elif hasattr(layer, 'block_sparse_moe') and hasattr(layer.block_sparse_moe, 'experts'):
+            for expert in layer.block_sparse_moe.experts:
+                if hasattr(expert, 'w2'):
+                    expert_weights.append(expert.w2.weight)
+        
+        # gpt-oss MoE style
+        elif hasattr(mlp, 'experts') and hasattr(mlp.experts, 'down_proj'):
+            expert_weights.append(mlp.experts.down_proj)
+    
+    return expert_weights, shared_expert_weights
+
+
+def apply_abliteration_to_batched_experts(
+    batched_expert_weights: torch.Tensor,
+    refusal_direction: torch.Tensor,
+    scale_factor: float
+) -> torch.Tensor:
+    """Apply abliteration to batched expert weights."""
+    num_experts, out_dim, in_dim = batched_expert_weights.shape
+    device = batched_expert_weights.device
+    dtype = batched_expert_weights.dtype
+    
+    # Normalize refusal direction
+    refusal_normalized = F.normalize(refusal_direction.to(device).to(dtype), dim=0)
+    
+    # Create projection matrix once for all experts
+    projector = torch.outer(refusal_normalized, refusal_normalized).to(dtype)
+    
+    # Reshape for batched matrix multiplication
+    weights_flat = batched_expert_weights.view(num_experts * out_dim, in_dim)
+    
+    # Apply abliteration to all experts simultaneously
+    projections = torch.matmul(weights_flat, projector)
+    modified_weights_flat = weights_flat - scale_factor * projections
+    
+    # Reshape back to expert format
+    modified_weights = modified_weights_flat.view(num_experts, out_dim, in_dim)
+    
+    return modified_weights
+
+
+def apply_abliteration_to_shared_expert(
+    shared_expert_weights: torch.Tensor,
+    refusal_direction: torch.Tensor,
+    scale_factor: float
+) -> torch.Tensor:
+    """Apply abliteration to shared expert weights."""
+    device = shared_expert_weights.device
+    dtype = shared_expert_weights.dtype
+    
+    # Normalize refusal direction
+    refusal_normalized = F.normalize(refusal_direction.to(device).to(dtype), dim=0)
+    
+    # Create projection matrix
+    projector = torch.outer(refusal_normalized, refusal_normalized).to(dtype)
+    
+    # Apply abliteration
+    projection = torch.matmul(projector, shared_expert_weights.T).T
+    modified_weights = shared_expert_weights - scale_factor * projection
+    
+    return modified_weights
+
+
+def update_matrix_in_place(original_matrix: torch.Tensor, modified_matrix: torch.Tensor):
+    """Update matrix in place, handling different quantization types."""
+    if hasattr(original_matrix, 'bnb_quantized') and original_matrix.bnb_quantized:
+        # Handle bitsandbytes quantization
+        try:
+            if hasattr(original_matrix, 'weight') and original_matrix.weight is not None:
+                with torch.no_grad():
+                    original_matrix.weight.data = modified_matrix
+        except Exception as e:
+            print(f"Warning: Failed to update quantized matrix: {e}")
+    elif hasattr(original_matrix, '_data_impl') and hasattr(original_matrix._data_impl, '_value'):
+        # Handle torchao quantization
+        with torch.no_grad():
+            original_matrix.copy_(modified_matrix)
+    else:
+        # Handle regular weights
+        with torch.no_grad():
+            original_matrix.copy_(modified_matrix)
 
 
 @dataclass
@@ -232,6 +382,21 @@ class Model:
         self.model = None
         self.abliteration_hook = None  # For on-the-fly abliteration
         self.abliteration_params = None  # Store abliteration parameters
+        
+        # Phase 1 optimization initialization
+        self.phase1_stats = {
+            'experts_processed': 0,
+            'batches_processed': 0,
+            'layers_processed': 0,
+            'shared_experts_processed': 0
+        }
+        
+        # Check if Phase 1 optimizations are enabled
+        self.enable_phase1_optimizations = getattr(settings, 'enable_phase1_optimizations', True)
+        if self.enable_phase1_optimizations:
+            print(f"* Phase 1 optimizations enabled")
+            print(f"* Expert batching: {getattr(settings, 'phase1_batch_experts', True)}")
+            print(f"* Memory efficient: {getattr(settings, 'phase1_memory_efficient', True)}")
 
         # Check if torchao quantization is requested
         if settings.use_torchao:
@@ -437,6 +602,63 @@ class Model:
         return self.model.model.layers
 
     def get_layer_matrices(self, layer_index: int) -> dict[str, list[Tensor]]:
+        """Get layer matrices with Phase 1 MoE optimizations."""
+        if self.enable_phase1_optimizations:
+            return self._get_layer_matrices_phase1(layer_index)
+        else:
+            return self._get_layer_matrices_original(layer_index)
+    
+    def _get_layer_matrices_phase1(self, layer_index: int) -> dict[str, list[Tensor]]:
+        """Phase 1 optimized layer matrix processing with expert batching."""
+        layer = self.get_layers()[layer_index]
+        matrices = {}
+
+        def try_add(component: str, matrix: Any):
+            assert torch.is_tensor(matrix)
+            if component not in matrices:
+                matrices[component] = []
+            matrices[component].append(matrix)
+
+        # Standard attention processing
+        try_add("attn.o_proj", layer.self_attn.o_proj.weight)
+
+        # Check if this is an MoE layer and apply optimizations
+        if detect_moe_layer(layer):
+            expert_weights, shared_expert_weights = get_expert_weights_from_layer(layer)
+            
+            if expert_weights:
+                # Batch expert weights for efficient processing
+                try:
+                    batched_experts = batch_expert_weights(expert_weights)
+                    matrices["mlp.down_proj.batched"] = [batched_experts]
+                    self.phase1_stats['experts_processed'] += len(expert_weights)
+                    self.phase1_stats['batches_processed'] += 1
+                except ValueError as e:
+                    # Fallback to individual processing if batching fails
+                    if getattr(self.settings, 'phase1_verbose_logging', False):
+                        print(f"Warning: Could not batch experts at layer {layer_index}: {e}")
+                    for i, expert_weight in enumerate(expert_weights):
+                        matrices[f"mlp.down_proj.expert_{i}"] = [expert_weight]
+            
+            if shared_expert_weights is not None:
+                matrices["mlp.shared_down_proj"] = [shared_expert_weights]
+                self.phase1_stats['shared_experts_processed'] += 1
+        else:
+            # Fallback to standard MLP processing
+            with suppress(Exception):
+                try_add("mlp.down_proj", layer.mlp.down_proj.weight)
+
+        self.phase1_stats['layers_processed'] += 1
+        
+        # Ensure we have at least one MLP down-projection
+        if "mlp.down_proj" not in matrices and "mlp.down_proj.batched" not in matrices:
+            with suppress(Exception):
+                try_add("mlp.down_proj", layer.mlp.down_proj.weight)
+
+        return matrices
+    
+    def _get_layer_matrices_original(self, layer_index: int) -> dict[str, list[Tensor]]:
+        """Original layer matrix processing (fallback)."""
         layer = self.get_layers()[layer_index]
 
         matrices = {}
@@ -1186,3 +1408,49 @@ class Model:
             outputs[0, inputs["input_ids"].shape[1] :],
             skip_special_tokens=True,
         )
+
+    
+    def get_phase1_performance_stats(self) -> dict:
+        """Get Phase 1 performance statistics."""
+        stats = self.phase1_stats.copy()
+        
+        # Add configuration info
+        stats['configuration'] = {
+            'phase1_optimizations_enabled': self.enable_phase1_optimizations,
+            'batch_experts': getattr(self.settings, 'phase1_batch_experts', True),
+            'memory_efficient': getattr(self.settings, 'phase1_memory_efficient', True),
+            'performance_monitoring': getattr(self.settings, 'phase1_performance_monitoring', True),
+        }
+        
+        return stats
+    
+    def reset_phase1_stats(self):
+        """Reset Phase 1 performance statistics."""
+        self.phase1_stats = {
+            'experts_processed': 0,
+            'batches_processed': 0,
+            'layers_processed': 0,
+            'shared_experts_processed': 0
+        }
+    
+    def save_phase1_stats(self, filename: str = None):
+        """Save Phase 1 performance statistics to file."""
+        if not getattr(self.settings, 'phase1_save_stats', False):
+            return
+        
+        if filename is None:
+            filename = getattr(self.settings, 'phase1_stats_file', 'phase1_performance_stats.json')
+        
+        stats = self.get_phase1_stats()
+        
+        try:
+            import json
+            with open(filename, 'w') as f:
+                json.dump(stats, f, indent=2)
+            
+            if getattr(self.settings, 'phase1_verbose_logging', False):
+                print(f"* Phase 1 performance stats saved to {filename}")
+                
+        except Exception as e:
+            if getattr(self.settings, 'phase1_verbose_logging', False):
+                print(f"* Warning: Could not save Phase 1 stats to {filename}: {e}")
