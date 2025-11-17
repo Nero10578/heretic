@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     system_prompt: str = Field(default="You are a helpful assistant.", description="System prompt")
     evaluate_model: Optional[str] = Field(default=None, description="Model to evaluate")
     
+    # Quantization settings
+    use_torchao: bool = Field(default=False, description="Use torchao quantization")
+    torchao_quant_type: str = Field(default="int4_weight_only", description="Torchao quantization type")
+    torchao_group_size: int = Field(default=128, description="Torchao quantization group size")
+    torchao_include_embedding: bool = Field(default=False, description="Include embedding in torchao quantization")
+    load_in_4bit: bool = Field(default=False, description="Load model in 4-bit precision")
+    load_in_8bit: bool = Field(default=False, description="Load model in 8-bit precision")
+    device_map: str = Field(default="auto", description="Device map for model loading")
+    dtypes: list[str] = Field(default=["bfloat16", "float16", "float32"], description="Data types to try")
+    max_response_length: int = Field(default=512, description="Maximum response length")
+    
     # Dataset specifications
     good_prompts: DatasetSpecification = Field(
         default=DatasetSpecification(dataset="Anthropic/hh-rlhf", split="train"),
