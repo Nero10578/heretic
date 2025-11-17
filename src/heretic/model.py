@@ -639,14 +639,11 @@ class Model:
         # Text-only models.
         return self.model.model.layers
 
-    def get_layer_matrices(self, layer_index: int, for_kl_divergence: bool = False) -> dict[str, list[Tensor]]:
+    def get_layer_matrices(self, layer_index: int) -> dict[str, list[Tensor]]:
         """Get layer matrices with Phase 1 and Phase 2 MoE optimizations."""
-        # IMPORTANT: Phase optimizations should NOT interfere with KL divergence calculations
-        # Only use optimizations for abliteration, not for probability calculations
-        if for_kl_divergence:
-            # Always use original matrices for KL divergence calculations
-            return self._get_layer_matrices_original(layer_index)
-        elif self.enable_phase1_optimizations:
+        # IMPORTANT: MoE optimizations should be transparent to model behavior
+        # They should not affect the actual computations, only performance
+        if self.enable_phase1_optimizations:
             return self._get_layer_matrices_phase1(layer_index)
         else:
             return self._get_layer_matrices_original(layer_index)
@@ -670,18 +667,20 @@ class Model:
             expert_weights, shared_expert_weights = get_expert_weights_from_layer(layer)
             
             if expert_weights:
-                # Batch expert weights for efficient processing
+                # For abliteration, we still need individual expert matrices
+                # The batching optimization should only affect performance, not the actual matrices
+                for i, expert_weight in enumerate(expert_weights):
+                    matrices[f"mlp.down_proj.expert_{i}"] = [expert_weight]
+                
+                # Store batched version separately for performance optimization
                 try:
                     batched_experts = batch_expert_weights(expert_weights)
                     matrices["mlp.down_proj.batched"] = [batched_experts]
                     self.phase1_stats['experts_processed'] += len(expert_weights)
                     self.phase1_stats['batches_processed'] += 1
                 except ValueError as e:
-                    # Fallback to individual processing if batching fails
                     if getattr(self.settings, 'phase1_verbose_logging', False):
                         print(f"Warning: Could not batch experts at layer {layer_index}: {e}")
-                    for i, expert_weight in enumerate(expert_weights):
-                        matrices[f"mlp.down_proj.expert_{i}"] = [expert_weight]
             
             if shared_expert_weights is not None:
                 matrices["mlp.shared_down_proj"] = [shared_expert_weights]
@@ -1085,7 +1084,7 @@ class Model:
             if self.enable_phase2_optimizations and self.phase2_optimizer is not None:
                 matrices = self._get_layer_matrices_phase2_for_abliteration(layer_index)
             else:
-                matrices = self.get_layer_matrices(layer_index, for_kl_divergence=False)
+                matrices = self.get_layer_matrices(layer_index)
             
             for component, matrices_list in matrices.items():
                 params = parameters[component]
@@ -1226,7 +1225,7 @@ class Model:
             if self.enable_phase2_optimizations and self.phase2_optimizer is not None:
                 matrices = self._get_layer_matrices_phase2_for_abliteration(layer_index)
             else:
-                matrices = self.get_layer_matrices(layer_index, for_kl_divergence=False)
+                matrices = self.get_layer_matrices(layer_index)
             
             for component, matrices_list in matrices.items():
                 params = parameters[component]
@@ -1502,15 +1501,15 @@ class Model:
     
     def get_logprobs_no_abliteration(self, prompts: list[str]) -> Tensor:
         """Get logprobs without applying any abliteration hooks."""
-        # Temporarily disable abliteration parameters and optimizations
+        # Temporarily disable abliteration parameters only
         original_params = self.abliteration_params
+        self.abliteration_params = None
         
-        with OriginalModelContext(self):
-            self.abliteration_params = None
+        try:
             result = self.get_logprobs(prompts, use_abliteration=False)
-        
-        # Restore original abliteration parameters
-        self.abliteration_params = original_params
+        finally:
+            # Restore original abliteration parameters
+            self.abliteration_params = original_params
         
         return result
     
