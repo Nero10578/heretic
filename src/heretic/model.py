@@ -355,6 +355,30 @@ class AbliterationHook:
         return output_preserved
 
 
+class OriginalModelContext:
+    """Context manager to temporarily use original model matrices for KL divergence calculations."""
+    
+    def __init__(self, model):
+        self.model = model
+        self.original_phase1_enabled = None
+        self.original_phase2_enabled = None
+    
+    def __enter__(self):
+        # Temporarily disable optimizations
+        self.original_phase1_enabled = self.model.enable_phase1_optimizations
+        self.original_phase2_enabled = self.model.enable_phase2_optimizations
+        
+        self.model.enable_phase1_optimizations = False
+        self.model.enable_phase2_optimizations = False
+        
+        return self.model
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Restore original optimization settings
+        self.model.enable_phase1_optimizations = self.original_phase1_enabled
+        self.model.enable_phase2_optimizations = self.original_phase2_enabled
+
+
 class Model:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -615,11 +639,14 @@ class Model:
         # Text-only models.
         return self.model.model.layers
 
-    def get_layer_matrices(self, layer_index: int) -> dict[str, list[Tensor]]:
+    def get_layer_matrices(self, layer_index: int, for_kl_divergence: bool = False) -> dict[str, list[Tensor]]:
         """Get layer matrices with Phase 1 and Phase 2 MoE optimizations."""
-        # IMPORTANT: Phase 2 optimizations should NOT interfere with KL divergence calculations
-        # Only use Phase 2 for abliteration, not for probability calculations
-        if self.enable_phase1_optimizations:
+        # IMPORTANT: Phase optimizations should NOT interfere with KL divergence calculations
+        # Only use optimizations for abliteration, not for probability calculations
+        if for_kl_divergence:
+            # Always use original matrices for KL divergence calculations
+            return self._get_layer_matrices_original(layer_index)
+        elif self.enable_phase1_optimizations:
             return self._get_layer_matrices_phase1(layer_index)
         else:
             return self._get_layer_matrices_original(layer_index)
@@ -1058,7 +1085,7 @@ class Model:
             if self.enable_phase2_optimizations and self.phase2_optimizer is not None:
                 matrices = self._get_layer_matrices_phase2_for_abliteration(layer_index)
             else:
-                matrices = self.get_layer_matrices(layer_index)
+                matrices = self.get_layer_matrices(layer_index, for_kl_divergence=False)
             
             for component, matrices_list in matrices.items():
                 params = parameters[component]
@@ -1199,7 +1226,7 @@ class Model:
             if self.enable_phase2_optimizations and self.phase2_optimizer is not None:
                 matrices = self._get_layer_matrices_phase2_for_abliteration(layer_index)
             else:
-                matrices = self.get_layer_matrices(layer_index)
+                matrices = self.get_layer_matrices(layer_index, for_kl_divergence=False)
             
             for component, matrices_list in matrices.items():
                 params = parameters[component]
@@ -1447,7 +1474,7 @@ class Model:
 
     # We work with logprobs rather than probabilities for numerical stability
     # when computing the KL divergence.
-    def get_logprobs(self, prompts: list[str]) -> Tensor:
+    def get_logprobs(self, prompts: list[str], use_abliteration: bool = True) -> Tensor:
         # We only generate one token, and we return the (log) probability distributions
         # over the vocabulary at that token position, for each prompt.
         _, outputs = self.generate(
@@ -1463,11 +1490,36 @@ class Model:
         # The returned tensor has shape (prompt, token).
         return F.log_softmax(logits, dim=-1)
 
-    def get_logprobs_batched(self, prompts: list[str]) -> Tensor:
+    def get_logprobs_batched(self, prompts: list[str], use_abliteration: bool = True) -> Tensor:
         logprobs = []
 
         for batch in batchify(prompts, self.settings.batch_size):
-            logprobs.append(self.get_logprobs(batch))
+            logprobs.append(self.get_logprobs(batch, use_abliteration))
+            # Clear memory after each batch to prevent accumulation
+            empty_cache()
+
+        return torch.cat(logprobs, dim=0)
+    
+    def get_logprobs_no_abliteration(self, prompts: list[str]) -> Tensor:
+        """Get logprobs without applying any abliteration hooks."""
+        # Temporarily disable abliteration parameters and optimizations
+        original_params = self.abliteration_params
+        
+        with OriginalModelContext(self):
+            self.abliteration_params = None
+            result = self.get_logprobs(prompts, use_abliteration=False)
+        
+        # Restore original abliteration parameters
+        self.abliteration_params = original_params
+        
+        return result
+    
+    def get_logprobs_batched_no_abliteration(self, prompts: list[str]) -> Tensor:
+        """Get batched logprobs without applying any abliteration hooks."""
+        logprobs = []
+
+        for batch in batchify(prompts, self.settings.batch_size):
+            logprobs.append(self.get_logprobs_no_abliteration(batch))
             # Clear memory after each batch to prevent accumulation
             empty_cache()
 

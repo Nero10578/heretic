@@ -21,7 +21,7 @@ class Evaluator:
         print(f"* [bold]{len(self.good_prompts)}[/] prompts loaded")
 
         print("* Obtaining first-token probability distributions...")
-        self.base_logprobs = model.get_logprobs_batched(self.good_prompts)
+        self.base_logprobs = model.get_logprobs_batched_no_abliteration(self.good_prompts)
 
         print()
         print(
@@ -60,10 +60,19 @@ class Evaluator:
         empty_cache()
         
         print("  * Obtaining first-token probability distributions...")
-        logprobs = self.model.get_logprobs_batched(self.good_prompts)
+        # Ensure we use abliterated model for comparison
+        logprobs = self.model.get_logprobs_batched(self.good_prompts, use_abliteration=True)
         
         # Clear memory after getting logprobs
         empty_cache()
+        
+        # Calculate KL divergence properly
+        # Make sure both tensors are on the same device and have the same shape
+        if logprobs.device != self.base_logprobs.device:
+            self.base_logprobs = self.base_logprobs.to(logprobs.device)
+        
+        if logprobs.shape != self.base_logprobs.shape:
+            raise ValueError(f"Shape mismatch: logprobs {logprobs.shape} vs base_logprobs {self.base_logprobs.shape}")
         
         kl_divergence = F.kl_div(
             logprobs,
@@ -71,7 +80,7 @@ class Evaluator:
             reduction="batchmean",
             log_target=True,
         ).item()
-        print(f"  * KL divergence: [bold]{kl_divergence:.2f}[/]")
+        print(f"  * KL divergence: [bold]{kl_divergence:.4f}[/]")
 
         # Check if KL divergence exceeds the maximum threshold
         if kl_divergence > self.settings.max_kl_divergence:
