@@ -1168,7 +1168,9 @@ class Model:
                 self,
                 self.abliteration_params['refusal_directions'],
                 self.abliteration_params['direction_index'],
-                self.abliteration_params['parameters']
+                self.abliteration_params['parameters'],
+                self.abliteration_params.get('good_residuals'),
+                self.abliteration_params.get('bad_residuals')
             ):
                 outputs = self.model.generate(
                     **inputs,
