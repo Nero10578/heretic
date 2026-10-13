@@ -2,7 +2,7 @@
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
 from enum import Enum
-from typing import Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 from pydantic import (
     BaseModel,
@@ -324,6 +324,14 @@ class Settings(BaseSettings):
         ),
     )
 
+    chat_template_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Additional keyword arguments passed to the tokenizer's apply_chat_template. "
+            "Use this for template options such as enable_thinking = true."
+        ),
+    )
+
     response_prefix: str | None = Field(
         default=None,
         description=(
@@ -373,6 +381,12 @@ class Settings(BaseSettings):
             (
                 "[THINK]",
                 "[THINK][/THINK]",
+            ),
+            # Gemma 4 channel-based reasoning. Requires
+            # `chat_template_kwargs = { enable_thinking = true }`.
+            (
+                "<|channel>thought\n",
+                "<|channel>thought\n<channel|>",
             ),
         ],
         description=(

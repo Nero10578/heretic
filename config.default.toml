@@ -55,6 +55,10 @@ generate_chain_of_thought = false
 # max_response_length, which bounds only the final answer.
 max_thought_length = 2048
 
+# Additional keyword arguments passed to the tokenizer's apply_chat_template.
+# Use this for template options such as enable_thinking = true (e.g. Gemma 4).
+# chat_template_kwargs = { enable_thinking = true }
+
 # List of pairs of the form [cot_initializer, closed_cot_block] used to skip
 # the Chain-of-Thought block in responses, so that evaluation happens
 # at the start of the actual response.
@@ -78,6 +82,12 @@ chain_of_thought_skips = [
     [
         "[THINK]",
         "[THINK][/THINK]",
+    ],
+    # Gemma 4 channel-based reasoning. Requires
+    # `chat_template_kwargs = { enable_thinking = true }`.
+    [
+        "<|channel>thought\n",
+        "<|channel>thought\n<channel|>",
     ],
 ]
 

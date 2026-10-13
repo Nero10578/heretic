@@ -11,9 +11,9 @@ export_strategy = "adapter"
 # Fixed batch size (non-zero skips auto-tuning; 0 = auto).
 batch_size = 32
 n_trials = 100
-
-# Use underscores, not dashes, in config.toml (dashes are only for CLI flags).
 n_startup_trials = 30
+print_debug_information = true
+
 
 # Let the model generate its own reasoning (as dictated by its chat template)
 # instead of pre-filling a closed reasoning block. Refusals are then detected
@@ -24,6 +24,11 @@ n_startup_trials = 30
 # the first answer token, matching where the behavior of interest lives.
 generate_chain_of_thought = true
 max_thought_length = 8192
+
+# Gemma 4's chat template only starts reasoning when enable_thinking is set;
+# without it, the template opens and immediately closes the thought channel and
+# the model answers directly. Forwarded to apply_chat_template.
+chat_template_kwargs = { enable_thinking = true }
 
 # ---- Scorers ----
 # Refusals on harmful prompts, plus a 2x2 KL matrix:

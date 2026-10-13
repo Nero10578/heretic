@@ -481,6 +481,8 @@ class Model:
                 tokenize=False,
                 # Overrides the function that templates call to get the current date.
                 strftime_now=strftime_fixed_date,
+                # Extra template options (e.g. enable_thinking) from the config.
+                **self.settings.chat_template_kwargs,
             ),
         )
 
@@ -1105,6 +1107,8 @@ class Model:
                 chat,
                 add_generation_prompt=True,
                 tokenize=False,
+                # Extra template options (e.g. enable_thinking) from the config.
+                **self.settings.chat_template_kwargs,
             ),
         )
 
