@@ -3,6 +3,7 @@
 
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, TypeAlias, cast
 
@@ -56,6 +57,23 @@ def strftime_fixed_date(format: str) -> str:
 # from the module index to an (input, output) tuple containing the I/O
 # tensors of shape (prompt, component).
 ModuleIO: TypeAlias = list[dict[str, dict[int, tuple[Tensor, Tensor]]]]
+
+
+@dataclass
+class GenerationRecord:
+    """
+    Result of generating a response for a single prompt.
+
+    Besides the decoded answer, it retains the token IDs up to the answer-capture
+    position. Keeping both in one record lets response decoding (refusal/keyword
+    scoring) and logit or residual capture share a single generation instead of
+    regenerating the reasoning for each.
+    """
+
+    response: str
+    capture_ids: list[int]
+    unfinished: bool
+    generated_token_count: int
 
 
 class Model:
@@ -552,42 +570,26 @@ class Model:
         at, the point where the model actually answers. Prompts whose reasoning does not
         finish within the token budget fall back to the full generation.
         """
-        inputs = self._tokenize_prompts(prompts)
-        input_length = cast(Tensor, inputs["input_ids"]).shape[1]
-
-        outputs = cast(
-            LongTensor,
-            self._generate_from_inputs(
-                inputs,
-                max_new_tokens=(
-                    self.settings.max_thought_length + self.settings.max_response_length
-                ),
-            ),
+        records = self.get_response_records(prompts)
+        return self._capture_inputs_from_ids(
+            [record.capture_ids for record in records]
         )
 
+    def _capture_inputs_from_ids(self, capture_ids: list[list[int]]) -> BatchEncoding:
+        """
+        Left-pad the given per-prompt capture token IDs into one batch, so the capture
+        position is the last position of every row. Padding is masked out, and the
+        prompt padding that generation introduced is already stripped, so the result
+        does not depend on which batch the tokens were generated in.
+        """
         pad_id = self.tokenizer.pad_token_id
 
-        prefixes: list[list[int]] = []
-        for row in outputs.tolist():
-            generated = row[input_length:]
-            # Strip any trailing padding left after a sequence hit EOS.
-            while generated and generated[-1] == pad_id:
-                generated.pop()
-
-            answer_start = self._answer_start_index(generated)
-            prefixes.append(
-                row[:input_length]
-                + (generated if answer_start is None else generated[:answer_start])
-            )
-
-        max_length = max(len(prefix) for prefix in prefixes)
-        input_ids = torch.full((len(prefixes), max_length), pad_id, dtype=torch.long)
-        attention_mask = torch.zeros((len(prefixes), max_length), dtype=torch.long)
-        for index, prefix in enumerate(prefixes):
-            length = len(prefix)
-            input_ids[index, max_length - length :] = torch.tensor(
-                prefix, dtype=torch.long
-            )
+        max_length = max(len(ids) for ids in capture_ids)
+        input_ids = torch.full((len(capture_ids), max_length), pad_id, dtype=torch.long)
+        attention_mask = torch.zeros((len(capture_ids), max_length), dtype=torch.long)
+        for index, ids in enumerate(capture_ids):
+            length = len(ids)
+            input_ids[index, max_length - length :] = torch.tensor(ids, dtype=torch.long)
             attention_mask[index, max_length - length :] = 1
 
         return BatchEncoding(
@@ -606,50 +608,52 @@ class Model:
             return self.settings.max_thought_length + self.settings.max_response_length
         return self.settings.max_response_length
 
-    def get_responses_with_status(
+    def get_response_records(
         self,
         prompts: list[Prompt],
         skip_special_tokens: bool = False,
-    ) -> tuple[list[str], int, int]:
+    ) -> list[GenerationRecord]:
         """
-        Like get_responses, but also returns:
-        - the number of responses whose answer is empty because the reasoning block never
-          closed (only nonzero in reasoning mode), and
-        - the number of tokens generated per prompt in this call.
+        Generate one response per prompt and return, for each, the decoded answer
+        together with the token IDs up to the answer-capture position. Sharing these
+        lets refusal scoring and logit/residual capture reuse a single generation
+        instead of regenerating the reasoning separately.
         """
         inputs, outputs = self.generate(
             prompts,
             max_new_tokens=self._response_max_new_tokens(),
         )
 
-        # Extract the newly generated part.
-        # This cast is valid because the input_ids property is a Tensor
+        # This cast is valid because input_ids is a Tensor
         # if the tokenizer is invoked with return_tensors="pt", as above.
-        generated = outputs[:, cast(Tensor, inputs["input_ids"]).shape[1] :]
-        generated_tokens = generated.shape[1]
+        input_ids = cast(Tensor, inputs["input_ids"])
+        attention_mask = cast(Tensor, inputs["attention_mask"])
+        generated = outputs[:, input_ids.shape[1] :]
+        pad_id = self.tokenizer.pad_token_id
 
-        if not self.settings.generate_chain_of_thought:
-            return (
-                self.tokenizer.batch_decode(
-                    generated,
-                    skip_special_tokens=skip_special_tokens,
-                ),
-                0,
-                generated_tokens,
-            )
+        records: list[GenerationRecord] = []
 
-        # Return only the text after the reasoning block closes, so that scoring
-        # (refusal detection) never sees the chain of thought.
-        responses: list[str] = []
-        unfinished = 0
-        for index, row in enumerate(generated):
-            answer_ids, was_unfinished = self._answer_token_ids_with_status(
-                row.tolist()
-            )
-            unfinished += int(was_unfinished)
+        for index, row in enumerate(generated.tolist()):
+            # The prompt is left-padded (see __init__), so recover its real token IDs
+            # from the attention mask instead of slicing, which would leave the padding
+            # in place and later attend it during logit capture.
+            prompt_ids = input_ids[index][attention_mask[index] == 1].tolist()
+
+            # Strip any trailing padding left after a sequence hit EOS.
+            while row and row[-1] == pad_id:
+                row.pop()
+
+            if self.settings.generate_chain_of_thought:
+                answer_ids, capture_ids, unfinished = self._answer_and_capture_ids(
+                    prompt_ids, row
+                )
+            else:
+                answer_ids = row[: self.settings.max_response_length]
+                capture_ids = prompt_ids + answer_ids
+                unfinished = False
 
             if (
-                was_unfinished
+                unfinished
                 and self.settings.print_debug_information
                 and not self._unfinished_reasoning_dumped
             ):
@@ -658,7 +662,7 @@ class Model:
                 prompt_text = self._build_chat_prompts([prompts[index]])[0]
                 raw = cast(
                     str,
-                    self.tokenizer.decode(row.tolist(), skip_special_tokens=False),
+                    self.tokenizer.decode(row, skip_special_tokens=False),
                 )
                 print()
                 print("Debug: reasoning never closed (one-shot dump).", markup=False)
@@ -671,27 +675,58 @@ class Model:
                 print(f"* Raw head: {raw[:300]!r}", markup=False)
                 print(f"* Raw tail: {raw[-400:]!r}", markup=False)
 
-            responses.append(
-                cast(
-                    str,
-                    self.tokenizer.decode(
-                        answer_ids,
-                        skip_special_tokens=skip_special_tokens,
+            records.append(
+                GenerationRecord(
+                    response=cast(
+                        str,
+                        self.tokenizer.decode(
+                            answer_ids,
+                            skip_special_tokens=skip_special_tokens,
+                        ),
                     ),
+                    capture_ids=capture_ids,
+                    unfinished=unfinished,
+                    generated_token_count=len(row),
                 )
             )
 
-        return responses, unfinished, generated_tokens
+        return records
+
+    def get_responses_with_status(
+        self,
+        prompts: list[Prompt],
+        skip_special_tokens: bool = False,
+    ) -> tuple[list[str], int, int]:
+        """
+        Like get_responses, but also returns the number of responses whose answer is
+        empty because the reasoning block never closed (only nonzero in reasoning mode),
+        and the largest number of tokens generated for any prompt in this call.
+        """
+        records = self.get_response_records(
+            prompts,
+            skip_special_tokens=skip_special_tokens,
+        )
+        return (
+            [record.response for record in records],
+            sum(record.unfinished for record in records),
+            max(
+                (record.generated_token_count for record in records),
+                default=0,
+            ),
+        )
 
     def get_responses(
         self,
         prompts: list[Prompt],
         skip_special_tokens: bool = False,
     ) -> list[str]:
-        return self.get_responses_with_status(
-            prompts,
-            skip_special_tokens=skip_special_tokens,
-        )[0]
+        return [
+            record.response
+            for record in self.get_response_records(
+                prompts,
+                skip_special_tokens=skip_special_tokens,
+            )
+        ]
 
     def get_generation_token_count(self, prompts: list[Prompt]) -> int:
         """
@@ -779,25 +814,66 @@ class Model:
         """
         return self._answer_token_ids_with_status(generated_ids)[0]
 
+    def _answer_and_capture_ids(
+        self,
+        prompt_ids: list[int],
+        generated_ids: list[int],
+    ) -> tuple[list[int], list[int], bool]:
+        """
+        Split a generated sequence into the final answer token IDs and the token IDs up
+        to the first answer token (the logit/residual capture position), plus an
+        "unfinished" flag. When the reasoning block never closed, the capture position
+        falls back to the end of the generation.
+        """
+        answer_ids, unfinished = self._answer_token_ids_with_status(generated_ids)
+
+        if not self._reasoning_close_tag_ids():
+            capture_ids = prompt_ids + answer_ids
+        else:
+            answer_start = self._answer_start_index(generated_ids)
+            if answer_start is None:
+                capture_ids = prompt_ids + generated_ids
+            else:
+                capture_ids = prompt_ids + generated_ids[:answer_start]
+
+        return answer_ids, capture_ids, unfinished
+
     def get_responses_batched(
         self,
         prompts: list[Prompt],
         skip_special_tokens: bool = False,
     ) -> list[str]:
-        responses = []
+        return [
+            record.response
+            for record in self.get_response_records_batched(
+                prompts,
+                skip_special_tokens=skip_special_tokens,
+            )
+        ]
+
+    def get_response_records_batched(
+        self,
+        prompts: list[Prompt],
+        skip_special_tokens: bool = False,
+    ) -> list[GenerationRecord]:
+        records: list[GenerationRecord] = []
         unfinished = 0
         max_generated = 0
 
         for batch in batchify(prompts, self.settings.batch_size):
-            batch_responses, batch_unfinished, batch_generated = (
-                self.get_responses_with_status(
-                    batch,
-                    skip_special_tokens=skip_special_tokens,
-                )
+            batch_records = self.get_response_records(
+                batch,
+                skip_special_tokens=skip_special_tokens,
             )
-            responses.extend(batch_responses)
-            unfinished += batch_unfinished
-            max_generated = max(max_generated, batch_generated)
+            records.extend(batch_records)
+            unfinished += sum(record.unfinished for record in batch_records)
+            max_generated = max(
+                max_generated,
+                max(
+                    (record.generated_token_count for record in batch_records),
+                    default=0,
+                ),
+            )
 
         if unfinished:
             budget = self._response_max_new_tokens()
@@ -819,7 +895,7 @@ class Model:
                 "responses are counted as refusals."
             )
 
-        return responses
+        return records
 
     def get_residuals(
         self,
@@ -975,6 +1051,12 @@ class Model:
 
             return hook
 
+        # Compute the capture inputs before registering the hooks below: in reasoning
+        # mode this generates the model's reasoning to locate the answer position, and
+        # running that generation with the hooks active would make them fire once per
+        # generation step instead of once per capture.
+        inputs = self._capture_inputs(prompts)
+
         hook_handles: list[RemovableHandle] = []
 
         for layer_index in range(len(self.get_layers())):
@@ -986,7 +1068,7 @@ class Model:
                         )
                     )
 
-        self._generate_from_inputs(self._capture_inputs(prompts), max_new_tokens=1)
+        self._generate_from_inputs(inputs, max_new_tokens=1)
 
         for hook_handle in hook_handles:
             hook_handle.remove()
@@ -1052,14 +1134,9 @@ class Model:
 
         return module_io
 
-    def get_logits(
-        self,
-        prompts: list[Prompt],
-        after_reasoning: bool | None = None,
-    ) -> Tensor:
+    def _logits_from_inputs(self, inputs: BatchEncoding) -> Tensor:
         # We only generate one token, and we return the raw logits over the vocabulary
         # at that token position, for each prompt.
-        inputs = self._capture_inputs(prompts, after_reasoning)
         outputs = self._generate_from_inputs(
             inputs,
             max_new_tokens=1,
@@ -1085,6 +1162,20 @@ class Model:
             empty_cache()
 
         return logits
+
+    def get_logits(
+        self,
+        prompts: list[Prompt],
+        after_reasoning: bool | None = None,
+    ) -> Tensor:
+        return self._logits_from_inputs(self._capture_inputs(prompts, after_reasoning))
+
+    def get_logits_from_capture_ids(self, capture_ids: list[list[int]]) -> Tensor:
+        """
+        Logits at the answer-capture position for precomputed capture token IDs (see
+        get_response_records). Avoids regenerating the reasoning that produced them.
+        """
+        return self._logits_from_inputs(self._capture_inputs_from_ids(capture_ids))
 
     def get_logits_batched(
         self,

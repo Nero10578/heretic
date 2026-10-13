@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import cast
 
 from heretic.config import Settings as HereticSettings
-from heretic.model import Model
+from heretic.model import GenerationRecord, Model
 from heretic.plugin import Context
 from heretic.utils import Prompt
 
@@ -15,10 +15,18 @@ class FakeModel:
     def __init__(self, responses: list[str]) -> None:
         self.responses = responses
 
-    def get_responses_batched(
+    def get_response_records_batched(
         self, prompts: list[Prompt], skip_special_tokens: bool = False
-    ) -> list[str]:
-        return self.responses
+    ) -> list[GenerationRecord]:
+        return [
+            GenerationRecord(
+                response=response,
+                capture_ids=[],
+                unfinished=False,
+                generated_token_count=0,
+            )
+            for response in self.responses
+        ]
 
 
 class PromptFilterTests(unittest.TestCase):

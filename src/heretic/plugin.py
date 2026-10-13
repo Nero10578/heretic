@@ -10,13 +10,14 @@ from pathlib import Path
 from types import ModuleType
 from typing import Annotated, Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
+import torch
 from pydantic import BaseModel
 from torch import Tensor
 
 from .config import DatasetSpecification, SingleDatasetSpecification
 from .config import Settings as HereticSettings
-from .model import Model
-from .utils import Prompt, deep_merge_dicts, is_keyword_match, load_prompts
+from .model import GenerationRecord, Model
+from .utils import Prompt, batchify, deep_merge_dicts, is_keyword_match, load_prompts
 
 T = TypeVar("T")
 
@@ -156,19 +157,40 @@ class Context:
     def __init__(self, settings: HereticSettings, model: Model) -> None:
         self._model = model
         self._settings = settings
-        self._responses_cache: dict[tuple[tuple[str, str], ...], list[str]] = {}
+        # Per-prompt generation records, keyed by prompt, so that refusal scoring and
+        # logit capture share a single generation instead of regenerating the reasoning.
+        self._generation_records: dict[tuple[str, str], GenerationRecord] = {}
 
-    def _cache_key(self, prompts: list[Prompt]) -> tuple[tuple[str, str], ...]:
-        return tuple((p.system, p.user) for p in prompts)
+    def _prompt_key(self, prompt: Prompt) -> tuple[str, str]:
+        return (prompt.system, prompt.user)
+
+    def get_generation_records(self, prompts: list[Prompt]) -> list[GenerationRecord]:
+        """
+        Return one generation record per prompt, generating (and caching) only the
+        prompts that have not been generated in this context yet.
+        """
+        missing: list[Prompt] = []
+        seen: set[tuple[str, str]] = set()
+        for prompt in prompts:
+            key = self._prompt_key(prompt)
+            if key not in self._generation_records and key not in seen:
+                seen.add(key)
+                missing.append(prompt)
+
+        if missing:
+            records = self._model.get_response_records_batched(
+                missing, skip_special_tokens=True
+            )
+            for prompt, record in zip(missing, records):
+                self._generation_records[self._prompt_key(prompt)] = record
+
+        return [
+            self._generation_records[self._prompt_key(prompt)] for prompt in prompts
+        ]
 
     def get_responses(self, prompts: list[Prompt]) -> list[str]:
-        """Get model responses (cached within this context)."""
-        key = self._cache_key(prompts)
-        if key not in self._responses_cache:
-            self._responses_cache[key] = self._model.get_responses_batched(
-                prompts, skip_special_tokens=True
-            )
-        return self._responses_cache[key]
+        """Get model responses (generated once per prompt within this context)."""
+        return [record.response for record in self.get_generation_records(prompts)]
 
     def filter_prompts_by_refusal(
         self,
@@ -197,7 +219,24 @@ class Context:
         prompts: list[Prompt],
         after_reasoning: bool | None = None,
     ) -> Tensor:
-        return self._model.get_logits_batched(prompts, after_reasoning)
+        if after_reasoning is None:
+            after_reasoning = self._settings.generate_chain_of_thought
+
+        if not after_reasoning:
+            return self._model.get_logits_batched(prompts, after_reasoning)
+
+        # Reuse the reasoning already generated for these prompts (e.g. for refusal
+        # filtering) instead of regenerating it to locate the answer position.
+        capture_ids = [
+            record.capture_ids for record in self.get_generation_records(prompts)
+        ]
+        return torch.cat(
+            [
+                self._model.get_logits_from_capture_ids(batch)
+                for batch in batchify(capture_ids, self._settings.batch_size)
+            ],
+            dim=0,
+        )
 
     def get_residuals(self, prompts: list[Prompt]) -> Tensor:
         return self._model.get_residuals_batched(prompts)
