@@ -1138,7 +1138,7 @@ class Model:
                         )
                     )
 
-        self._generate_from_inputs(inputs, max_new_tokens=1)
+        self._generate_from_inputs(inputs, max_new_tokens=1, use_cache=False)
 
         for hook_handle in hook_handles:
             hook_handle.remove()
