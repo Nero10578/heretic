@@ -24,6 +24,15 @@ quantization = "none"
 # Device map to pass to Accelerate when loading the model.
 device_map = "auto"
 
+# Attention implementation passed to from_pretrained. Options:
+# "auto" (use FlashAttention-2/3 if the flash-attn package is installed, otherwise
+# the library default, usually SDPA), or an explicit implementation:
+# "flash_attention_2", "flash_attention_3", "flash_attention_4", "sdpa", "eager".
+# FlashAttention is much faster for the long reasoning sequences, but it is not
+# bit-exact with SDPA, so it changes results and invalidates the reproducibility hashes.
+# Install it with: pip install flash-attn --no-build-isolation
+attn_implementation = "auto"
+
 # Maximum memory to allocate per device.
 # max_memory = { "0" = "20GB", "cpu" = "64GB" }
 

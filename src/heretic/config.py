@@ -264,6 +264,24 @@ class Settings(BaseSettings):
         description='Maximum memory to allocate per device (e.g., { "0" = "20GB", "cpu" = "64GB" }).',
     )
 
+    attn_implementation: Literal[
+        "auto",
+        "flash_attention_2",
+        "flash_attention_3",
+        "flash_attention_4",
+        "sdpa",
+        "eager",
+    ] = Field(
+        default="auto",
+        description=(
+            'Attention implementation for inference, passed to from_pretrained. "auto" '
+            "selects FlashAttention when the flash-attn package is installed, which is "
+            "much faster for the long reasoning sequences (otherwise the library default, "
+            "usually SDPA, is used). FlashAttention is not bit-exact with SDPA, so it "
+            "changes results slightly and invalidates the reproducibility hashes."
+        ),
+    )
+
     offload_outputs_to_cpu: bool = Field(
         default=True,
         description=(

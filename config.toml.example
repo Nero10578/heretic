@@ -14,6 +14,12 @@ n_trials = 100
 n_startup_trials = 30
 print_debug_information = true
 
+# Attention backend. "auto" uses FlashAttention-2/3 when the flash-attn package is
+# installed (fastest for the long reasoning sequences), otherwise the library default
+# (usually SDPA). Explicit options: flash_attention_2/3/4, sdpa, eager.
+# Note: FlashAttention is not bit-exact with SDPA, so it changes results slightly.
+attn_implementation = "auto"
+
 
 # Let the model generate its own reasoning (as dictated by its chat template)
 # instead of pre-filling a closed reasoning block. Refusals are then detected

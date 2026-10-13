@@ -28,6 +28,7 @@ from transformers import (
 from transformers.generation import (
     GenerateDecoderOnlyOutput,
 )
+from transformers.utils import is_flash_attn_2_available, is_flash_attn_3_available
 
 from .config import QuantizationMethod, Settings
 from .system import empty_cache
@@ -133,68 +134,88 @@ class Model:
 
         self.trusted_models = set()
 
+        loaded = False
+
         for dtype in settings.dtypes:
-            print(f"* Trying dtype [bold]{dtype}[/]...")
+            if loaded:
+                break
 
-            try:
-                quantization_config = self._get_quantization_config(dtype)
-
-                extra_kwargs = {}
-                # Only include quantization_config if it's not None
-                # (some models like gpt-oss have issues with explicit None).
-                if quantization_config is not None:
-                    extra_kwargs["quantization_config"] = quantization_config
-
-                self.model = get_model_class(settings.model).from_pretrained(
-                    settings.model,
-                    dtype=dtype,
-                    device_map=settings.device_map,
-                    max_memory=self.max_memory,
-                    trust_remote_code=True
-                    if settings.model in self.trusted_models
-                    else None,
-                    **self.revision_kwargs,
-                    **extra_kwargs,
-                )
-
-                self.dtype = self.model.dtype
-
-                # If we reach this point and the model requires trust_remote_code,
-                # the user must have agreed when prompted to execute remote code,
-                # because from_pretrained raises an exception otherwise.
-                self.trusted_models.add(settings.model)
-
-                # A test run can reveal dtype-related problems such as the infamous
-                # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
-                # (https://github.com/meta-llama/llama/issues/380).
-                self.generate(
-                    [
-                        Prompt(
-                            system=settings.system_prompt,
-                            user="What is 1+1?",
-                        )
-                    ],
-                    max_new_tokens=1,
-                )
-            except Exception as error:
-                self.model = None
-                empty_cache()
-
-                formatted = format_exception(error)
-                if "\n" in formatted:
-                    print(f"* [red]Failed:\n{formatted}[/]")
+            for attention in self._attention_candidates(settings.attn_implementation):
+                if attention is None:
+                    print(f"* Trying dtype [bold]{dtype}[/]...")
                 else:
-                    print(f"* [red]Failed ({formatted})[/]")
+                    print(
+                        f"* Trying dtype [bold]{dtype}[/] with "
+                        f"[bold]{attention}[/] attention..."
+                    )
 
-                continue
+                try:
+                    quantization_config = self._get_quantization_config(dtype)
 
-            if settings.quantization == QuantizationMethod.BNB_4BIT:
-                print("* Quantized to 4-bit precision")
+                    extra_kwargs = {}
+                    # Only include quantization_config if it's not None
+                    # (some models like gpt-oss have issues with explicit None).
+                    if quantization_config is not None:
+                        extra_kwargs["quantization_config"] = quantization_config
+                    if attention is not None:
+                        extra_kwargs["attn_implementation"] = attention
 
-            break
+                    self.model = get_model_class(settings.model).from_pretrained(
+                        settings.model,
+                        dtype=dtype,
+                        device_map=settings.device_map,
+                        max_memory=self.max_memory,
+                        trust_remote_code=True
+                        if settings.model in self.trusted_models
+                        else None,
+                        **self.revision_kwargs,
+                        **extra_kwargs,
+                    )
+
+                    self.dtype = self.model.dtype
+
+                    # If we reach this point and the model requires trust_remote_code,
+                    # the user must have agreed when prompted to execute remote code,
+                    # because from_pretrained raises an exception otherwise.
+                    self.trusted_models.add(settings.model)
+
+                    # A test run can reveal dtype-related problems such as the infamous
+                    # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
+                    # (https://github.com/meta-llama/llama/issues/380).
+                    self.generate(
+                        [
+                            Prompt(
+                                system=settings.system_prompt,
+                                user="What is 1+1?",
+                            )
+                        ],
+                        max_new_tokens=1,
+                    )
+                except Exception as error:
+                    self.model = None
+                    empty_cache()
+
+                    formatted = format_exception(error)
+                    if "\n" in formatted:
+                        print(f"* [red]Failed:\n{formatted}[/]")
+                    else:
+                        print(f"* [red]Failed ({formatted})[/]")
+
+                    continue
+
+                if settings.quantization == QuantizationMethod.BNB_4BIT:
+                    print("* Quantized to 4-bit precision")
+
+                if attention is not None:
+                    print(f"* Using [bold]{attention}[/] for attention")
+
+                loaded = True
+                break
 
         if self.model is None:
-            raise Exception("Failed to load model with all configured dtypes.")
+            raise Exception(
+                "Failed to load model with all configured dtypes and attention implementations."
+            )
 
         print(f"* Transformer model with [bold]{len(self.get_layers())}[/] layers")
 
@@ -282,6 +303,28 @@ class Model:
                 bnb_4bit_use_double_quant=True,
             )
         return None
+
+    @staticmethod
+    def _attention_candidates(requested: str) -> list[str | None]:
+        """
+        Attention implementations to try, in order.
+
+        "auto" prefers FlashAttention when the flash-attn package is installed (it is
+        much faster for the long reasoning sequences) and otherwise leaves the choice to
+        transformers, which defaults to SDPA. An explicit request is tried first, then
+        SDPA, then the library default, so an unsupported request degrades gracefully.
+        """
+        if requested == "auto":
+            if is_flash_attn_2_available():
+                return ["flash_attention_2", "sdpa"]
+            if is_flash_attn_3_available():
+                return ["flash_attention_3", "sdpa"]
+            return [None]
+
+        if requested == "sdpa":
+            return ["sdpa"]
+
+        return [requested, "sdpa", None]
 
     def get_merged_model(self) -> PreTrainedModel:
         # Guard against calling this method at the wrong time.
