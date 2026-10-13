@@ -607,11 +607,12 @@ class Model:
         self,
         prompts: list[Prompt],
         skip_special_tokens: bool = False,
-    ) -> tuple[list[str], int]:
+    ) -> tuple[list[str], int, int]:
         """
-        Like get_responses, but also returns the number of responses whose answer is
-        empty because the reasoning block never closed. This count is only nonzero in
-        reasoning mode (generate_chain_of_thought).
+        Like get_responses, but also returns:
+        - the number of responses whose answer is empty because the reasoning block never
+          closed (only nonzero in reasoning mode), and
+        - the number of tokens generated per prompt in this call.
         """
         inputs, outputs = self.generate(
             prompts,
@@ -622,6 +623,7 @@ class Model:
         # This cast is valid because the input_ids property is a Tensor
         # if the tokenizer is invoked with return_tensors="pt", as above.
         generated = outputs[:, cast(Tensor, inputs["input_ids"]).shape[1] :]
+        generated_tokens = generated.shape[1]
 
         if not self.settings.generate_chain_of_thought:
             return (
@@ -630,6 +632,7 @@ class Model:
                     skip_special_tokens=skip_special_tokens,
                 ),
                 0,
+                generated_tokens,
             )
 
         # Return only the text after the reasoning block closes, so that scoring
@@ -651,7 +654,7 @@ class Model:
                 )
             )
 
-        return responses, unfinished
+        return responses, unfinished, generated_tokens
 
     def get_responses(
         self,
@@ -756,21 +759,37 @@ class Model:
     ) -> list[str]:
         responses = []
         unfinished = 0
+        max_generated = 0
 
         for batch in batchify(prompts, self.settings.batch_size):
-            batch_responses, batch_unfinished = self.get_responses_with_status(
-                batch,
-                skip_special_tokens=skip_special_tokens,
+            batch_responses, batch_unfinished, batch_generated = (
+                self.get_responses_with_status(
+                    batch,
+                    skip_special_tokens=skip_special_tokens,
+                )
             )
             responses.extend(batch_responses)
             unfinished += batch_unfinished
+            max_generated = max(max_generated, batch_generated)
 
         if unfinished:
+            budget = self._response_max_new_tokens()
+            if max_generated >= budget:
+                reason = (
+                    f"generation reached the {budget}-token budget, so reasoning was cut "
+                    "off before the closing tag"
+                )
+            else:
+                reason = (
+                    f"generation stopped at {max_generated} tokens, below the "
+                    f"{budget}-token budget, so the model ended its turn without the "
+                    "expected closing tag"
+                )
             print()
             print(
                 f"[yellow]Warning:[/] {unfinished}/{len(prompts)} responses have an empty "
-                "answer because the reasoning block never closed (no closing tag found "
-                "within the token budget). Empty responses are counted as refusals."
+                f"answer because the reasoning block never closed: {reason}. Empty "
+                "responses are counted as refusals."
             )
 
         return responses
