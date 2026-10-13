@@ -475,7 +475,7 @@ def run():
         settings.batch_size = best_batch_size
         print(f"* Chosen batch size: [bold]{settings.batch_size}[/]")
 
-    if settings.response_prefix is None:
+    if settings.response_prefix is None and not settings.generate_chain_of_thought:
         print()
         print(
             f"Loading response prefix test prompts from [bold]{format_dataset_specification(settings.response_prefix_test_prompts)}[/]..."

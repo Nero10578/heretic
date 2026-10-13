@@ -42,6 +42,19 @@ max_batch_size = 128
 # Maximum number of tokens to generate for each response.
 max_response_length = 100
 
+# If true, let the model generate its reasoning naturally (as dictated by its chat
+# template) instead of pre-filling a closed reasoning block. Refusals are then detected
+# only in the text after the reasoning completes, and residuals, module I/O, and KL
+# logits are captured at the first answer token. Generation is capped by
+# max_thought_length + max_response_length. Responses that never finish reasoning
+# (no closing tag found) are treated as refusals.
+generate_chain_of_thought = false
+
+# Maximum number of tokens to generate for the reasoning phase when
+# generate_chain_of_thought is true. This budget is separate from
+# max_response_length, which bounds only the final answer.
+max_thought_length = 2048
+
 # List of pairs of the form [cot_initializer, closed_cot_block] used to skip
 # the Chain-of-Thought block in responses, so that evaluation happens
 # at the start of the actual response.
@@ -199,6 +212,15 @@ dataset = "mlabonne/harmful_behaviors"
 split = "test[:100]"
 column = "text"
 
+
+# Which next-token distribution to compare against the baseline:
+# "first_token" (start of the response, i.e. the start of reasoning),
+# "first_answer_token" (the first token after the reasoning block closes),
+# or "auto" (follow the global generate_chain_of_thought setting).
+# Multiple instances can measure different datasets/positions at once; see the
+# `scorers` list above and `[scorer.KLDivergence_<instance_name>]` overrides.
+[scorer.KLDivergence]
+capture_position = "auto"
 
 # Dataset of prompts used to measure KL divergence from original model.
 [scorer.KLDivergence.prompts]

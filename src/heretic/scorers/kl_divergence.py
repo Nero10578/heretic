@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
+from typing import Literal
+
 import torch.nn.functional as F
 from pydantic import BaseModel, Field
 
@@ -18,6 +20,16 @@ class Settings(BaseModel):
             column="text",
         ),
         description="Dataset of prompts used to measure KL divergence from original model.",
+    )
+
+    capture_position: Literal["auto", "first_token", "first_answer_token"] = Field(
+        default="auto",
+        description=(
+            'Which next-token distribution to compare against the baseline: '
+            '"first_token" (start of the response, i.e. the start of reasoning), '
+            '"first_answer_token" (the first token after the reasoning block closes), '
+            'or "auto" (follow the global generate_chain_of_thought setting).'
+        ),
     )
 
 
@@ -39,6 +51,14 @@ class KLDivergence(Scorer):
     def score_name(self) -> str:
         return "KL divergence"
 
+    @property
+    def _after_reasoning(self) -> bool | None:
+        if self.settings.capture_position == "first_token":
+            return False
+        if self.settings.capture_position == "first_answer_token":
+            return True
+        return None
+
     def init(self, ctx: Context) -> None:
         print()
         print(
@@ -47,13 +67,13 @@ class KLDivergence(Scorer):
         self.prompts = ctx.load_prompts(self.settings.prompts)
         print(f"* [bold]{len(self.prompts)}[/] prompts loaded")
 
-        print("* Obtaining baseline first-token probability distributions...")
-        baseline_logits = ctx.get_logits(self.prompts)
+        print("* Obtaining baseline probability distributions...")
+        baseline_logits = ctx.get_logits(self.prompts, self._after_reasoning)
 
         self._baseline_logprobs = F.log_softmax(baseline_logits, dim=-1)
 
     def get_score(self, ctx: Context) -> Score:
-        logits = ctx.get_logits(self.prompts)
+        logits = ctx.get_logits(self.prompts, self._after_reasoning)
         logprobs = F.log_softmax(logits, dim=-1)
 
         kl_divergence = F.kl_div(

@@ -170,8 +170,12 @@ class Context:
             )
         return self._responses_cache[key]
 
-    def get_logits(self, prompts: list[Prompt]) -> Tensor:
-        return self._model.get_logits_batched(prompts)
+    def get_logits(
+        self,
+        prompts: list[Prompt],
+        after_reasoning: bool | None = None,
+    ) -> Tensor:
+        return self._model.get_logits_batched(prompts, after_reasoning)
 
     def get_residuals(self, prompts: list[Prompt]) -> Tensor:
         return self._model.get_residuals_batched(prompts)

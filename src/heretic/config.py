@@ -304,6 +304,26 @@ class Settings(BaseSettings):
         description="Maximum number of tokens to generate for each response.",
     )
 
+    generate_chain_of_thought: bool = Field(
+        default=False,
+        description=(
+            "If true, let the model generate its reasoning naturally (as dictated by its "
+            "chat template) instead of pre-filling a closed reasoning block. Refusals are "
+            "then detected only in the text after the reasoning completes, and residuals, "
+            "module I/O, and KL logits are captured at the first answer token. Generation "
+            "is capped by max_thought_length + max_response_length."
+        ),
+    )
+
+    max_thought_length: PositiveInt = Field(
+        default=2048,
+        description=(
+            "Maximum number of tokens to generate for the reasoning phase when "
+            "generate_chain_of_thought is true. This budget is separate from "
+            "max_response_length, which bounds only the final answer."
+        ),
+    )
+
     response_prefix: str | None = Field(
         default=None,
         description=(

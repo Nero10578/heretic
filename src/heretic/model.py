@@ -69,6 +69,7 @@ class Model:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.needs_reload = False
+        self._cot_close_tag_ids_cache: list[list[int]] | None = None
 
         self.revision_kwargs = {}
         if settings.model_commit is not None:
@@ -460,11 +461,7 @@ class Model:
 
         return sorted(components)
 
-    def generate(
-        self,
-        prompts: list[Prompt],
-        **kwargs: Any,
-    ) -> tuple[BatchEncoding, GenerateDecoderOnlyOutput | LongTensor]:
+    def _build_chat_prompts(self, prompts: list[Prompt]) -> list[str]:
         chats = [
             [
                 {"role": "system", "content": prompt.system},
@@ -486,48 +483,216 @@ class Model:
             ),
         )
 
-        if self.settings.response_prefix:
+        if self.settings.response_prefix and not self.settings.generate_chain_of_thought:
             # Append the common response prefix to the prompts so that evaluation happens
             # at the point where responses start to differ for different prompts.
             chat_prompts = [
                 prompt + self.settings.response_prefix for prompt in chat_prompts
             ]
 
-        inputs = self.tokenizer(
-            chat_prompts,
+        return chat_prompts
+
+    def _tokenize_prompts(self, prompts: list[Prompt]) -> BatchEncoding:
+        return self.tokenizer(
+            self._build_chat_prompts(prompts),
             return_tensors="pt",
             padding=True,
             return_token_type_ids=False,
         ).to(self.model.device)
 
+    def _generate_from_inputs(
+        self,
+        inputs: BatchEncoding,
+        **kwargs: Any,
+    ) -> GenerateDecoderOnlyOutput | LongTensor:
         # FIXME: The type checker has been disabled here because of the extremely complex
         #        interplay between different generate() signatures and dynamic delegation.
-        outputs = self.model.generate(
+        return self.model.generate(
             **inputs,
             **kwargs,
             pad_token_id=self.tokenizer.pad_token_id,
             do_sample=False,  # Use greedy decoding to ensure deterministic outputs.
         )  # ty:ignore[call-non-callable]
 
+    def generate(
+        self,
+        prompts: list[Prompt],
+        **kwargs: Any,
+    ) -> tuple[BatchEncoding, GenerateDecoderOnlyOutput | LongTensor]:
+        inputs = self._tokenize_prompts(prompts)
+        outputs = self._generate_from_inputs(inputs, **kwargs)
         return inputs, outputs
+
+    def _capture_inputs(
+        self,
+        prompts: list[Prompt],
+        after_reasoning: bool | None = None,
+    ) -> BatchEncoding:
+        """
+        Tokenized inputs at the position where residuals, module I/O, and logits should
+        be captured. Normally this is the last prompt position (i.e. the first response
+        token). If `after_reasoning` is true, it is instead the first answer token, after
+        the model's own reasoning. When `after_reasoning` is None, the global
+        generate_chain_of_thought setting decides.
+        """
+        if after_reasoning is None:
+            after_reasoning = self.settings.generate_chain_of_thought
+        if after_reasoning:
+            return self._answer_start_inputs(prompts)
+        return self._tokenize_prompts(prompts)
+
+    def _answer_start_inputs(self, prompts: list[Prompt]) -> BatchEncoding:
+        """
+        Tokenized inputs positioned at the first answer token: the chat prompt followed
+        by the model's own generated reasoning up to and including the chain-of-thought
+        closing tag. This ensures the ablation is aimed at, and KL divergence is measured
+        at, the point where the model actually answers. Prompts whose reasoning does not
+        finish within the token budget fall back to the full generation.
+        """
+        inputs = self._tokenize_prompts(prompts)
+        input_length = cast(Tensor, inputs["input_ids"]).shape[1]
+
+        outputs = cast(
+            LongTensor,
+            self._generate_from_inputs(
+                inputs,
+                max_new_tokens=(
+                    self.settings.max_thought_length + self.settings.max_response_length
+                ),
+            ),
+        )
+
+        pad_id = self.tokenizer.pad_token_id
+
+        prefixes: list[list[int]] = []
+        for row in outputs.tolist():
+            generated = row[input_length:]
+            # Strip any trailing padding left after a sequence hit EOS.
+            while generated and generated[-1] == pad_id:
+                generated.pop()
+
+            answer_start = self._answer_start_index(generated)
+            prefixes.append(
+                row[:input_length]
+                + (generated if answer_start is None else generated[:answer_start])
+            )
+
+        max_length = max(len(prefix) for prefix in prefixes)
+        input_ids = torch.full((len(prefixes), max_length), pad_id, dtype=torch.long)
+        attention_mask = torch.zeros((len(prefixes), max_length), dtype=torch.long)
+        for index, prefix in enumerate(prefixes):
+            length = len(prefix)
+            input_ids[index, max_length - length :] = torch.tensor(
+                prefix, dtype=torch.long
+            )
+            attention_mask[index, max_length - length :] = 1
+
+        return BatchEncoding(
+            {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+            }
+        ).to(self.model.device)
 
     def get_responses(
         self,
         prompts: list[Prompt],
         skip_special_tokens: bool = False,
     ) -> list[str]:
+        max_new_tokens = self.settings.max_response_length
+        if self.settings.generate_chain_of_thought:
+            # Generation must cover the reasoning phase plus the final answer.
+            # The answer is truncated back to max_response_length below.
+            max_new_tokens = (
+                self.settings.max_thought_length + self.settings.max_response_length
+            )
+
         inputs, outputs = self.generate(
             prompts,
-            max_new_tokens=self.settings.max_response_length,
+            max_new_tokens=max_new_tokens,
         )
 
+        # Extract the newly generated part.
+        # This cast is valid because the input_ids property is a Tensor
+        # if the tokenizer is invoked with return_tensors="pt", as above.
+        generated = outputs[:, cast(Tensor, inputs["input_ids"]).shape[1] :]
+
+        if self.settings.generate_chain_of_thought:
+            # Return only the text after the reasoning block closes, so that scoring
+            # (refusal detection) never sees the chain of thought.
+            return [
+                cast(
+                    str,
+                    self.tokenizer.decode(
+                        self._answer_token_ids(row.tolist()),
+                        skip_special_tokens=skip_special_tokens,
+                    ),
+                )
+                for row in generated
+            ]
+
         return self.tokenizer.batch_decode(
-            # Extract the newly generated part.
-            # This cast is valid because the input_ids property is a Tensor
-            # if the tokenizer is invoked with return_tensors="pt", as above.
-            outputs[:, cast(Tensor, inputs["input_ids"]).shape[1] :],
+            generated,
             skip_special_tokens=skip_special_tokens,
         )
+
+    def _reasoning_close_tag_ids(self) -> list[list[int]]:
+        """
+        Token IDs of the tag(s) that close a chain-of-thought block, derived from the
+        `chain_of_thought_skips` pairs (the part of the closed block that follows the
+        initializer).
+        """
+        if self._cot_close_tag_ids_cache is None:
+            tag_ids: list[list[int]] = []
+            for initializer, closed_block in self.settings.chain_of_thought_skips:
+                closer = closed_block.removeprefix(initializer)
+                if not closer:
+                    continue
+                ids = self.tokenizer.encode(closer, add_special_tokens=False)
+                if ids:
+                    tag_ids.append(list(ids))
+            self._cot_close_tag_ids_cache = tag_ids
+        return self._cot_close_tag_ids_cache
+
+    def _answer_start_index(self, generated_ids: list[int]) -> int | None:
+        """
+        Index of the first token after the earliest chain-of-thought closing tag in
+        `generated_ids`, or None if no closing tag is present.
+        """
+        answer_start = None
+        for tag_ids in self._reasoning_close_tag_ids():
+            tag_length = len(tag_ids)
+            for index in range(len(generated_ids) - tag_length + 1):
+                if generated_ids[index : index + tag_length] == tag_ids:
+                    end = index + tag_length
+                    if answer_start is None or end < answer_start:
+                        answer_start = end
+                    break
+        return answer_start
+
+    def _answer_token_ids(self, generated_ids: list[int]) -> list[int]:
+        """
+        Given the token IDs generated for a single prompt, return the token IDs of the
+        final answer only: everything after the first chain-of-thought closing tag,
+        truncated to max_response_length.
+
+        If the model never closed its reasoning block (no closing tag found, e.g. the
+        reasoning budget was exhausted mid-thought), the response is treated as a
+        refusal and an empty result is returned. The refusal scorer classifies empty
+        responses as refusals, so unfinished reasoning is never mistaken for compliance.
+
+        If no closing tags are configured at all, tag detection is impossible, so the
+        full generation is returned instead.
+        """
+        if not self._reasoning_close_tag_ids():
+            return generated_ids[: self.settings.max_response_length]
+
+        answer_start = self._answer_start_index(generated_ids)
+        if answer_start is None:
+            # Reasoning never finished: no answer was produced.
+            return []
+
+        return generated_ids[answer_start:][: self.settings.max_response_length]
 
     def get_responses_batched(
         self,
@@ -553,8 +718,9 @@ class Model:
     ) -> Tensor:
         # We only generate one token, and we return the residual vectors
         # at that token position, for each prompt and layer.
-        _, outputs = self.generate(
-            prompts,
+        inputs = self._capture_inputs(prompts)
+        outputs = self._generate_from_inputs(
+            inputs,
             max_new_tokens=1,
             output_hidden_states=True,
             return_dict_in_generate=True,
@@ -710,7 +876,7 @@ class Model:
                         )
                     )
 
-        self.generate(prompts, max_new_tokens=1)
+        self._generate_from_inputs(self._capture_inputs(prompts), max_new_tokens=1)
 
         for hook_handle in hook_handles:
             hook_handle.remove()
@@ -776,11 +942,16 @@ class Model:
 
         return module_io
 
-    def get_logits(self, prompts: list[Prompt]) -> Tensor:
+    def get_logits(
+        self,
+        prompts: list[Prompt],
+        after_reasoning: bool | None = None,
+    ) -> Tensor:
         # We only generate one token, and we return the raw logits over the vocabulary
         # at that token position, for each prompt.
-        _, outputs = self.generate(
-            prompts,
+        inputs = self._capture_inputs(prompts, after_reasoning)
+        outputs = self._generate_from_inputs(
+            inputs,
             max_new_tokens=1,
             output_logits=True,
             return_dict_in_generate=True,
@@ -805,11 +976,15 @@ class Model:
 
         return logits
 
-    def get_logits_batched(self, prompts: list[Prompt]) -> Tensor:
+    def get_logits_batched(
+        self,
+        prompts: list[Prompt],
+        after_reasoning: bool | None = None,
+    ) -> Tensor:
         logits = []
 
         for batch in batchify(prompts, self.settings.batch_size):
-            logits.append(self.get_logits(batch))
+            logits.append(self.get_logits(batch, after_reasoning))
 
         return torch.cat(logits, dim=0)
 
