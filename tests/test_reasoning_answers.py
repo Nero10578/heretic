@@ -22,6 +22,11 @@ class FakeModel:
     def _answer_start_index(self, generated_ids: list[int]) -> int | None:
         return Model._answer_start_index(cast(Model, self), generated_ids)
 
+    def _answer_token_ids_with_status(
+        self, generated_ids: list[int]
+    ) -> tuple[list[int], bool]:
+        return Model._answer_token_ids_with_status(cast(Model, self), generated_ids)
+
 
 class ReasoningAnswerTests(unittest.TestCase):
     def answer(
@@ -51,6 +56,24 @@ class ReasoningAnswerTests(unittest.TestCase):
 
     def test_no_tags_configured_returns_generation(self) -> None:
         self.assertEqual(self.answer([1, 2, 3], [], max_response_length=2), [1, 2])
+
+    def test_unfinished_reasoning_reports_status(self) -> None:
+        model = cast(Model, FakeModel([[99]], 100))
+        ids, unfinished = Model._answer_token_ids_with_status(model, [10, 11, 12])
+        self.assertEqual(ids, [])
+        self.assertTrue(unfinished)
+
+    def test_finished_reasoning_reports_status(self) -> None:
+        model = cast(Model, FakeModel([[99]], 100))
+        ids, unfinished = Model._answer_token_ids_with_status(model, [99, 20, 21])
+        self.assertEqual(ids, [20, 21])
+        self.assertFalse(unfinished)
+
+    def test_no_tags_reports_not_unfinished(self) -> None:
+        model = cast(Model, FakeModel([], 100))
+        ids, unfinished = Model._answer_token_ids_with_status(model, [1, 2, 3])
+        self.assertEqual(ids, [1, 2, 3])
+        self.assertFalse(unfinished)
 
     def test_answer_start_index_finds_position_after_tag(self) -> None:
         model = cast(Model, FakeModel([[99]], 100))

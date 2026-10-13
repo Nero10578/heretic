@@ -603,11 +603,16 @@ class Model:
             return self.settings.max_thought_length + self.settings.max_response_length
         return self.settings.max_response_length
 
-    def get_responses(
+    def get_responses_with_status(
         self,
         prompts: list[Prompt],
         skip_special_tokens: bool = False,
-    ) -> list[str]:
+    ) -> tuple[list[str], int]:
+        """
+        Like get_responses, but also returns the number of responses whose answer is
+        empty because the reasoning block never closed. This count is only nonzero in
+        reasoning mode (generate_chain_of_thought).
+        """
         inputs, outputs = self.generate(
             prompts,
             max_new_tokens=self._response_max_new_tokens(),
@@ -618,24 +623,45 @@ class Model:
         # if the tokenizer is invoked with return_tensors="pt", as above.
         generated = outputs[:, cast(Tensor, inputs["input_ids"]).shape[1] :]
 
-        if self.settings.generate_chain_of_thought:
-            # Return only the text after the reasoning block closes, so that scoring
-            # (refusal detection) never sees the chain of thought.
-            return [
+        if not self.settings.generate_chain_of_thought:
+            return (
+                self.tokenizer.batch_decode(
+                    generated,
+                    skip_special_tokens=skip_special_tokens,
+                ),
+                0,
+            )
+
+        # Return only the text after the reasoning block closes, so that scoring
+        # (refusal detection) never sees the chain of thought.
+        responses: list[str] = []
+        unfinished = 0
+        for row in generated:
+            answer_ids, was_unfinished = self._answer_token_ids_with_status(
+                row.tolist()
+            )
+            unfinished += int(was_unfinished)
+            responses.append(
                 cast(
                     str,
                     self.tokenizer.decode(
-                        self._answer_token_ids(row.tolist()),
+                        answer_ids,
                         skip_special_tokens=skip_special_tokens,
                     ),
                 )
-                for row in generated
-            ]
+            )
 
-        return self.tokenizer.batch_decode(
-            generated,
+        return responses, unfinished
+
+    def get_responses(
+        self,
+        prompts: list[Prompt],
+        skip_special_tokens: bool = False,
+    ) -> list[str]:
+        return self.get_responses_with_status(
+            prompts,
             skip_special_tokens=skip_special_tokens,
-        )
+        )[0]
 
     def get_generation_token_count(self, prompts: list[Prompt]) -> int:
         """
@@ -689,6 +715,27 @@ class Model:
                     break
         return answer_start
 
+    def _answer_token_ids_with_status(
+        self, generated_ids: list[int]
+    ) -> tuple[list[int], bool]:
+        """
+        Return the answer token IDs and an "unfinished" flag. The flag is True when the
+        reasoning block never closed (no closing tag found), i.e. the answer is empty
+        because generation was cut off mid-reasoning.
+
+        If no closing tags are configured at all, tag detection is impossible, so the
+        full generation is returned with unfinished=False.
+        """
+        if not self._reasoning_close_tag_ids():
+            return generated_ids[: self.settings.max_response_length], False
+
+        answer_start = self._answer_start_index(generated_ids)
+        if answer_start is None:
+            # Reasoning never finished: no answer was produced.
+            return [], True
+
+        return generated_ids[answer_start:][: self.settings.max_response_length], False
+
     def _answer_token_ids(self, generated_ids: list[int]) -> list[int]:
         """
         Given the token IDs generated for a single prompt, return the token IDs of the
@@ -699,19 +746,8 @@ class Model:
         reasoning budget was exhausted mid-thought), the response is treated as a
         refusal and an empty result is returned. The refusal scorer classifies empty
         responses as refusals, so unfinished reasoning is never mistaken for compliance.
-
-        If no closing tags are configured at all, tag detection is impossible, so the
-        full generation is returned instead.
         """
-        if not self._reasoning_close_tag_ids():
-            return generated_ids[: self.settings.max_response_length]
-
-        answer_start = self._answer_start_index(generated_ids)
-        if answer_start is None:
-            # Reasoning never finished: no answer was produced.
-            return []
-
-        return generated_ids[answer_start:][: self.settings.max_response_length]
+        return self._answer_token_ids_with_status(generated_ids)[0]
 
     def get_responses_batched(
         self,
@@ -719,13 +755,22 @@ class Model:
         skip_special_tokens: bool = False,
     ) -> list[str]:
         responses = []
+        unfinished = 0
 
         for batch in batchify(prompts, self.settings.batch_size):
-            responses.extend(
-                self.get_responses(
-                    batch,
-                    skip_special_tokens=skip_special_tokens,
-                )
+            batch_responses, batch_unfinished = self.get_responses_with_status(
+                batch,
+                skip_special_tokens=skip_special_tokens,
+            )
+            responses.extend(batch_responses)
+            unfinished += batch_unfinished
+
+        if unfinished:
+            print()
+            print(
+                f"[yellow]Warning:[/] {unfinished}/{len(prompts)} responses have an empty "
+                "answer because the reasoning block never closed (no closing tag found "
+                "within the token budget). Empty responses are counted as refusals."
             )
 
         return responses
