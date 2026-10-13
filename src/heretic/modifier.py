@@ -17,7 +17,8 @@ from .config import (
 )
 from .model import Model
 from .plugin import Context, Plugin, load_plugin
-from .utils import print
+from .scorers.keyword_rate import is_keyword_match
+from .utils import Prompt, print
 
 
 class Serializable(Protocol):
@@ -96,6 +97,54 @@ class Modifier(Plugin, ABC, Generic[Parameters]):
         return self.parameters_class.from_dict(
             trial.user_attrs["parameters"]
         ).to_presentation_dict()
+
+    def filter_prompts_by_refusal(
+        self,
+        ctx: Context,
+        good_prompts: list[Prompt],
+        bad_prompts: list[Prompt],
+        refusal_markers: list[str],
+    ) -> tuple[list[Prompt], list[Prompt]]:
+        """
+        Filters the prompt sets by the model's actual refusal behavior.
+
+        Harmful prompts that the model does not refuse are dropped, and harmless
+        prompts that the model does refuse are dropped. Falls back to the unfiltered
+        sets if filtering would leave either set empty.
+        """
+        print()
+        print("Filtering prompts based on model refusals...")
+
+        bad_responses = ctx.get_responses(bad_prompts)
+        kept_bad = [
+            prompt
+            for prompt, response in zip(bad_prompts, bad_responses)
+            if is_keyword_match(response, refusal_markers)
+        ]
+        print(
+            f"* Harmful prompts: keeping [bold]{len(kept_bad)}[/]/{len(bad_prompts)} "
+            "that are actually refused"
+        )
+
+        good_responses = ctx.get_responses(good_prompts)
+        kept_good = [
+            prompt
+            for prompt, response in zip(good_prompts, good_responses)
+            if not is_keyword_match(response, refusal_markers)
+        ]
+        print(
+            f"* Harmless prompts: keeping [bold]{len(kept_good)}[/]/{len(good_prompts)} "
+            "that are not refused"
+        )
+
+        if not kept_bad or not kept_good:
+            print(
+                "[yellow]Warning: Prompt filtering removed all prompts from at least "
+                "one set. Falling back to the unfiltered prompt sets.[/]"
+            )
+            return good_prompts, bad_prompts
+
+        return kept_good, kept_bad
 
 
 @dataclass

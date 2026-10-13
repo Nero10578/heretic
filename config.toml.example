@@ -1,0 +1,14 @@
+# Copy this file to `config.toml` in the directory you run Heretic from.
+# Running `heretic <model>` will then use these settings.
+#
+# TOML rule: top-level keys must appear BEFORE the first [table] header,
+# otherwise they end up inside that table and are silently ignored.
+
+# Top-level settings:
+max_response_length = 300
+export_strategy = "adapter"
+
+# The modifier defaults to ARA, so no `modifiers = [...]` line is needed.
+[modifier.ARA]
+lora_rank = 128
+filter_prompts = true

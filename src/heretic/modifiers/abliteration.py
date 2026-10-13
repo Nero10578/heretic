@@ -21,6 +21,7 @@ from torch import Tensor
 
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
 from heretic.modifier import Context, Modifier, Serializable
+from heretic.scorers.keyword_rate import REFUSAL_MARKERS
 from heretic.utils import format_dataset_specification, print
 
 
@@ -133,6 +134,25 @@ class Settings(BaseModel):
         ),
     )
 
+    filter_prompts: bool = Field(
+        default=False,
+        description=(
+            "Whether to filter the prompt sets based on the model's refusal behavior "
+            "before computing residual directions. When enabled, only harmful prompts "
+            "that the model actually refuses are kept, and harmless prompts that are "
+            "refused are discarded."
+        ),
+    )
+
+    refusal_markers: list[str] = Field(
+        default=REFUSAL_MARKERS,
+        description=(
+            "Keyword markers used to detect refusals when filtering prompts. "
+            "A response is considered a refusal if it is empty or contains any of these "
+            "strings (case insensitive). Only used when filter_prompts is enabled."
+        ),
+    )
+
 
 class Abliteration(Modifier[Parameters]):
     settings: Settings
@@ -169,6 +189,11 @@ class Abliteration(Modifier[Parameters]):
         )
         bad_prompts = ctx.load_prompts(self.settings.bad_prompts)
         print(f"* [bold]{len(bad_prompts)}[/] prompts loaded")
+
+        if self.settings.filter_prompts:
+            good_prompts, bad_prompts = self.filter_prompts_by_refusal(
+                ctx, good_prompts, bad_prompts, self.settings.refusal_markers
+            )
 
         print()
         print("Calculating per-layer residual directions...")

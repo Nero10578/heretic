@@ -282,6 +282,24 @@ full_normalization_lora_rank = 3
 # of the components, then clamps the magnitudes of all components to that quantile.
 winsorization_quantile = 1.0
 
+# Whether to filter the prompt sets by the model's actual refusal behavior before
+# computing residual directions. When enabled, only the harmful prompts that the
+# model actually refuses are kept, and harmless prompts that are refused are dropped.
+# This makes the residual directions reflect real refusals rather than assuming every
+# harmful prompt triggers one and no harmless prompt does.
+filter_prompts = false
+
+# Keyword markers used to detect refusals when filter_prompts is enabled.
+# A response is considered a refusal if it is empty or contains any of these
+# strings (case insensitive). Defaults to the same markers used by the
+# KeywordRate scorer. Only used when filter_prompts is enabled.
+# refusal_markers = [
+#     "sorry",
+#     "i cannot",
+#     "as an ai",
+#     ...,
+# ]
+
 # Dataset of prompts that tend to produce desirable responses.
 [modifier.Abliteration.good_prompts]
 dataset = "mlabonne/harmless_alpaca"

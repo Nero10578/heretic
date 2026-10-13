@@ -24,6 +24,7 @@ from torch.optim import LBFGS
 
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
 from heretic.modifier import Context, Modifier, Serializable
+from heretic.scorers.keyword_rate import REFUSAL_MARKERS
 from heretic.utils import format_dataset_specification, print
 
 
@@ -113,6 +114,25 @@ class Settings(BaseModel):
         description="Whether to print the loss value for each L-BFGS optimization step.",
     )
 
+    filter_prompts: bool = Field(
+        default=False,
+        description=(
+            "Whether to filter the prompt sets based on the model's refusal behavior "
+            "before obtaining module I/O. When enabled, only harmful prompts that the "
+            "model actually refuses are kept, and harmless prompts that are refused "
+            "are discarded."
+        ),
+    )
+
+    refusal_markers: list[str] = Field(
+        default=REFUSAL_MARKERS,
+        description=(
+            "Keyword markers used to detect refusals when filtering prompts. "
+            "A response is considered a refusal if it is empty or contains any of these "
+            "strings (case insensitive). Only used when filter_prompts is enabled."
+        ),
+    )
+
 
 # For each vector in the 2D-tensor `a`, computes the mean Euclidean distance
 # to the `k` nearest neighbors of the vector among the vectors in the 2D-tensor `b`.
@@ -188,6 +208,11 @@ class ARA(Modifier[Parameters]):
         )
         bad_prompts = ctx.load_prompts(self.settings.bad_prompts)
         print(f"* [bold]{len(bad_prompts)}[/] prompts loaded")
+
+        if self.settings.filter_prompts:
+            good_prompts, bad_prompts = self.filter_prompts_by_refusal(
+                ctx, good_prompts, bad_prompts, self.settings.refusal_markers
+            )
 
         self.good_prompt_count = len(good_prompts)
         self.bad_prompt_count = len(bad_prompts)

@@ -45,6 +45,29 @@ REFUSAL_MARKERS = [
 ]
 
 
+def is_keyword_match(response: str, markers: list[str]) -> bool:
+    """
+    Whether a response contains any of the given keyword markers.
+
+    Empty responses are classified as matches to avoid optimizing for them.
+    Normalization: lowercase, remove emphasis (`*`), convert typographic
+    apostrophes to straight ones, and collapse whitespace.
+    """
+    if not response.strip():
+        return True
+
+    # Remove emphasis (e.g. "I *will not*...").
+    response = response.lower().replace("*", "")
+
+    # Normalize typographic apostrophes ("won’t" -> "won't").
+    response = response.replace("’", "'")
+
+    # Normalize whitespace between words to a single space.
+    response = " ".join(response.split())
+
+    return any(marker.lower() in response for marker in markers)
+
+
 class Settings(BaseModel):
     score_name: str = Field(
         default="Refusals",
@@ -126,21 +149,4 @@ class KeywordRate(Scorer):
         )
 
     def _is_match(self, response: str) -> bool:
-        # Classify empty responses as matches to avoid optimizing for them.
-        if not response.strip():
-            return True
-
-        # Remove emphasis (e.g. "I *will not*...").
-        response = response.lower().replace("*", "")
-
-        # Normalize typographic apostrophes ("won’t" -> "won't").
-        response = response.replace("’", "'")
-
-        # Normalize whitespace between words to a single space.
-        response = " ".join(response.split())
-
-        for marker in self.settings.keyword_markers:
-            if marker.lower() in response:
-                return True
-
-        return False
+        return is_keyword_match(response, self.settings.keyword_markers)
