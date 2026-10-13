@@ -17,7 +17,7 @@ n_trials = 400
 # Residuals/module I/O (the ablation direction) and KL logits are captured at
 # the first answer token, matching where the behavior of interest lives.
 generate_chain_of_thought = true
-max_thought_length = 4096
+max_thought_length = 8192
 
 # ---- Scorers ----
 # Refusals on harmful prompts, plus a 2x2 KL matrix:

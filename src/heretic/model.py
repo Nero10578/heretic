@@ -594,22 +594,23 @@ class Model:
             }
         ).to(self.model.device)
 
+    def _response_max_new_tokens(self) -> int:
+        """
+        Maximum number of tokens a full response generation may produce. In reasoning
+        mode this covers the reasoning phase plus the final answer.
+        """
+        if self.settings.generate_chain_of_thought:
+            return self.settings.max_thought_length + self.settings.max_response_length
+        return self.settings.max_response_length
+
     def get_responses(
         self,
         prompts: list[Prompt],
         skip_special_tokens: bool = False,
     ) -> list[str]:
-        max_new_tokens = self.settings.max_response_length
-        if self.settings.generate_chain_of_thought:
-            # Generation must cover the reasoning phase plus the final answer.
-            # The answer is truncated back to max_response_length below.
-            max_new_tokens = (
-                self.settings.max_thought_length + self.settings.max_response_length
-            )
-
         inputs, outputs = self.generate(
             prompts,
-            max_new_tokens=max_new_tokens,
+            max_new_tokens=self._response_max_new_tokens(),
         )
 
         # Extract the newly generated part.
@@ -634,6 +635,24 @@ class Model:
         return self.tokenizer.batch_decode(
             generated,
             skip_special_tokens=skip_special_tokens,
+        )
+
+    def get_generation_token_count(self, prompts: list[Prompt]) -> int:
+        """
+        Number of tokens generated for the given prompts (including any reasoning).
+
+        Used to benchmark raw throughput. Unlike get_responses, this is not reduced to
+        the answer text, so it stays meaningful in reasoning mode, where most of the time
+        is spent generating the (much longer) reasoning block.
+        """
+        inputs, outputs = self.generate(
+            prompts,
+            max_new_tokens=self._response_max_new_tokens(),
+        )
+
+        outputs = cast(LongTensor, outputs)
+        return outputs.shape[0] * (
+            outputs.shape[1] - cast(Tensor, inputs["input_ids"]).shape[1]
         )
 
     def _reasoning_close_tag_ids(self) -> list[list[int]]:

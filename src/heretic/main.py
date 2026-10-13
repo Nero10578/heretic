@@ -443,7 +443,9 @@ def run():
                 model.get_responses(prompts)
 
                 start_time = time.perf_counter()
-                responses = model.get_responses(prompts)
+                # Count all generated tokens (including reasoning), not just the answer,
+                # so the throughput measurement stays meaningful in reasoning mode.
+                generated_tokens = model.get_generation_token_count(prompts)
                 end_time = time.perf_counter()
             except Exception as error:
                 if batch_size == 1:
@@ -459,10 +461,7 @@ def run():
 
                 break
 
-            response_lengths = [
-                len(model.tokenizer.encode(response)) for response in responses
-            ]
-            performance = sum(response_lengths) / (end_time - start_time)
+            performance = generated_tokens / (end_time - start_time)
 
             print(f"[green]Ok[/] ([bold]{performance:.0f}[/] tokens/s)")
 
