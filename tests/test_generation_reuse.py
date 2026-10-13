@@ -3,7 +3,7 @@
 
 import unittest
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import torch
 
@@ -18,6 +18,8 @@ class FakeModel:
 
     def __init__(self) -> None:
         self.generated_batches: list[list[str]] = []
+        self.module_io_calls: list[list[list[int]] | None] = []
+        self.residuals_mean_calls: list[list[list[int]] | None] = []
 
     def get_response_records_batched(
         self, prompts: list[Prompt], skip_special_tokens: bool = False
@@ -41,6 +43,23 @@ class FakeModel:
         self, prompts: list[Prompt], after_reasoning: bool | None = None
     ) -> torch.Tensor:
         return torch.zeros((len(prompts), 4))
+
+    def get_module_io_batched(
+        self,
+        prompts: list[Prompt],
+        capture_ids: list[list[int]] | None = None,
+    ) -> list[Any]:
+        self.module_io_calls.append(capture_ids)
+        return []
+
+    def get_residuals_mean(
+        self,
+        prompts: list[Prompt],
+        winsorization_quantile: float = 1.0,
+        capture_ids: list[list[int]] | None = None,
+    ) -> torch.Tensor:
+        self.residuals_mean_calls.append(capture_ids)
+        return torch.zeros((1,))
 
 
 class GenerationReuseTests(unittest.TestCase):
@@ -69,6 +88,26 @@ class GenerationReuseTests(unittest.TestCase):
         ctx.get_responses([Prompt("s", "b"), Prompt("s", "c")])
 
         self.assertEqual(model.generated_batches, [["a", "b"], ["c"]])
+
+    def test_module_io_reuses_generation(self) -> None:
+        ctx, model = self.make_ctx()
+        prompts = [Prompt("s", "a")]
+
+        ctx.get_responses(prompts)
+        ctx.get_module_io(prompts)
+
+        self.assertEqual(model.generated_batches, [["a"]])
+        self.assertEqual(model.module_io_calls, [[[1, 2, 3]]])
+
+    def test_residuals_mean_reuses_generation(self) -> None:
+        ctx, model = self.make_ctx()
+        prompts = [Prompt("s", "a")]
+
+        ctx.get_responses(prompts)
+        ctx.get_residuals_mean(prompts)
+
+        self.assertEqual(model.generated_batches, [["a"]])
+        self.assertEqual(model.residuals_mean_calls, [[[1, 2, 3]]])
 
 
 if __name__ == "__main__":

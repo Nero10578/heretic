@@ -218,11 +218,11 @@ class ARA(Modifier[Parameters]):
 
         print()
         print("Obtaining module I/O for good prompts...")
-        self.good_module_io = model.get_module_io_batched(good_prompts)
+        self.good_module_io = ctx.get_module_io(good_prompts)
 
         print()
         print("Obtaining module I/O for bad prompts...")
-        self.bad_module_io = model.get_module_io_batched(bad_prompts)
+        self.bad_module_io = ctx.get_module_io(bad_prompts)
 
         # LoRA B matrices are initialized to zero by default in PEFT,
         # so we don't need to do anything manually.

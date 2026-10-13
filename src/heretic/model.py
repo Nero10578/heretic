@@ -901,10 +901,15 @@ class Model:
         self,
         prompts: list[Prompt],
         winsorization_quantile: float = 1.0,
+        capture_ids: list[list[int]] | None = None,
     ) -> Tensor:
         # We only generate one token, and we return the residual vectors
         # at that token position, for each prompt and layer.
-        inputs = self._capture_inputs(prompts)
+        inputs = (
+            self._capture_inputs_from_ids(capture_ids)
+            if capture_ids is not None
+            else self._capture_inputs(prompts)
+        )
         outputs = self._generate_from_inputs(
             inputs,
             max_new_tokens=1,
@@ -958,16 +963,23 @@ class Model:
         self,
         prompts: list[Prompt],
         winsorization_quantile: float = 1.0,
+        capture_ids: list[list[int]] | None = None,
     ) -> Tensor:
-        residuals = []
+        prompt_batches = batchify(prompts, self.settings.batch_size)
+        capture_id_batches: list[list[list[int]] | None] = (
+            [None] * len(prompt_batches)
+            if capture_ids is None
+            else list(batchify(capture_ids, self.settings.batch_size))
+        )
 
-        for batch in batchify(prompts, self.settings.batch_size):
-            residuals.append(
-                self.get_residuals(
-                    batch,
-                    winsorization_quantile=winsorization_quantile,
-                )
+        residuals = [
+            self.get_residuals(
+                batch,
+                winsorization_quantile=winsorization_quantile,
+                capture_ids=ids,
             )
+            for batch, ids in zip(prompt_batches, capture_id_batches)
+        ]
 
         return torch.cat(residuals, dim=0)
 
@@ -975,17 +987,26 @@ class Model:
         self,
         prompts: list[Prompt],
         winsorization_quantile: float = 1.0,
+        capture_ids: list[list[int]] | None = None,
     ) -> Tensor:
         if not prompts:
             raise ValueError("prompts must not be empty")
 
+        prompt_batches = batchify(prompts, self.settings.batch_size)
+        capture_id_batches: list[list[list[int]] | None] = (
+            [None] * len(prompt_batches)
+            if capture_ids is None
+            else list(batchify(capture_ids, self.settings.batch_size))
+        )
+
         running_sum = None
         total_count = 0
 
-        for batch in batchify(prompts, self.settings.batch_size):
+        for batch, ids in zip(prompt_batches, capture_id_batches):
             batch_residuals = self.get_residuals(
                 batch,
                 winsorization_quantile=winsorization_quantile,
+                capture_ids=ids,
             )
 
             # Accumulate in high precision on CPU to reduce peak VRAM usage.
@@ -1005,6 +1026,7 @@ class Model:
     def get_module_io(
         self,
         prompts: list[Prompt],
+        capture_ids: list[list[int]] | None = None,
     ) -> ModuleIO:
         # The list contains one element per layer.
         # Each element maps from the component name to a (possibly sparse) mapping
@@ -1054,8 +1076,13 @@ class Model:
         # Compute the capture inputs before registering the hooks below: in reasoning
         # mode this generates the model's reasoning to locate the answer position, and
         # running that generation with the hooks active would make them fire once per
-        # generation step instead of once per capture.
-        inputs = self._capture_inputs(prompts)
+        # generation step instead of once per capture. If the capture token IDs are
+        # already available (e.g. from get_response_records), no generation is needed.
+        inputs = (
+            self._capture_inputs_from_ids(capture_ids)
+            if capture_ids is not None
+            else self._capture_inputs(prompts)
+        )
 
         hook_handles: list[RemovableHandle] = []
 
@@ -1078,6 +1105,7 @@ class Model:
     def get_module_io_batched(
         self,
         prompts: list[Prompt],
+        capture_ids: list[list[int]] | None = None,
     ) -> ModuleIO:
         # Aggregating batch results is more complicated for module I/O
         # than for other get_*_batched methods, because the structure of the results
@@ -1085,9 +1113,15 @@ class Model:
         # can depend on the prompt (in particular for MoE models).
         # In practice, inhomogeneous results should be very rare, but to be fully
         # generic, this logic is required.
+        prompt_batches = batchify(prompts, self.settings.batch_size)
+        capture_id_batches: list[list[list[int]] | None] = (
+            [None] * len(prompt_batches)
+            if capture_ids is None
+            else list(batchify(capture_ids, self.settings.batch_size))
+        )
         module_io_batches: list[ModuleIO] = [
-            self.get_module_io(batch)
-            for batch in batchify(prompts, self.settings.batch_size)
+            self.get_module_io(batch, ids)
+            for batch, ids in zip(prompt_batches, capture_id_batches)
         ]
 
         module_io: ModuleIO = []

@@ -198,12 +198,12 @@ class Abliteration(Modifier[Parameters]):
         print("Calculating per-layer residual directions...")
 
         print("* Obtaining residual mean for good prompts...")
-        good_means = model.get_residuals_mean(
+        good_means = ctx.get_residuals_mean(
             good_prompts,
             winsorization_quantile=self.settings.winsorization_quantile,
         )
         print("* Obtaining residual mean for bad prompts...")
-        bad_means = model.get_residuals_mean(
+        bad_means = ctx.get_residuals_mean(
             bad_prompts,
             winsorization_quantile=self.settings.winsorization_quantile,
         )

@@ -16,7 +16,7 @@ from torch import Tensor
 
 from .config import DatasetSpecification, SingleDatasetSpecification
 from .config import Settings as HereticSettings
-from .model import GenerationRecord, Model
+from .model import GenerationRecord, Model, ModuleIO
 from .utils import Prompt, batchify, deep_merge_dicts, is_keyword_match, load_prompts
 
 T = TypeVar("T")
@@ -240,6 +240,43 @@ class Context:
 
     def get_residuals(self, prompts: list[Prompt]) -> Tensor:
         return self._model.get_residuals_batched(prompts)
+
+    def get_residuals_mean(
+        self,
+        prompts: list[Prompt],
+        winsorization_quantile: float = 1.0,
+    ) -> Tensor:
+        """
+        Mean residuals at the capture position. Reuses the reasoning already generated
+        for these prompts within this context instead of regenerating it.
+        """
+        if not self._settings.generate_chain_of_thought:
+            return self._model.get_residuals_mean(
+                prompts,
+                winsorization_quantile=winsorization_quantile,
+            )
+
+        capture_ids = [
+            record.capture_ids for record in self.get_generation_records(prompts)
+        ]
+        return self._model.get_residuals_mean(
+            prompts,
+            winsorization_quantile=winsorization_quantile,
+            capture_ids=capture_ids,
+        )
+
+    def get_module_io(self, prompts: list[Prompt]) -> ModuleIO:
+        """
+        Module I/O at the capture position. Reuses the reasoning already generated for
+        these prompts within this context instead of regenerating it.
+        """
+        if not self._settings.generate_chain_of_thought:
+            return self._model.get_module_io_batched(prompts)
+
+        capture_ids = [
+            record.capture_ids for record in self.get_generation_records(prompts)
+        ]
+        return self._model.get_module_io_batched(prompts, capture_ids)
 
     def get_model(self) -> Model:
         """
