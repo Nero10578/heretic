@@ -7,7 +7,8 @@
 # ---- Top-level settings ----
 max_response_length = 300
 export_strategy = "adapter"
-n_trials = 400
+n_trials = 100
+n-startup-trials = 30
 
 # Let the model generate its own reasoning (as dictated by its chat template)
 # instead of pre-filling a closed reasoning block. Refusals are then detected
