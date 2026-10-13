@@ -16,7 +16,7 @@ from torch import Tensor
 from .config import DatasetSpecification, SingleDatasetSpecification
 from .config import Settings as HereticSettings
 from .model import Model
-from .utils import Prompt, deep_merge_dicts, load_prompts
+from .utils import Prompt, deep_merge_dicts, is_keyword_match, load_prompts
 
 T = TypeVar("T")
 
@@ -169,6 +169,28 @@ class Context:
                 prompts, skip_special_tokens=True
             )
         return self._responses_cache[key]
+
+    def filter_prompts_by_refusal(
+        self,
+        prompts: list[Prompt],
+        *,
+        keep_refused: bool,
+        refusal_markers: list[str],
+    ) -> list[Prompt]:
+        """
+        Filter prompts by the model's refusal behavior.
+
+        `keep_refused=True` keeps prompts the model refuses (for sets that are meant to
+        be refused, e.g. harmful prompts); `keep_refused=False` drops them (for sets that
+        are meant to be answered, e.g. harmless prompts). May return an empty list; the
+        caller decides how to handle that.
+        """
+        responses = self.get_responses(prompts)
+        return [
+            prompt
+            for prompt, response in zip(prompts, responses)
+            if is_keyword_match(response, refusal_markers) == keep_refused
+        ]
 
     def get_logits(
         self,

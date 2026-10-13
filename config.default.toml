@@ -206,6 +206,11 @@ keyword_markers = [
     "ethical boundaries",
 ]
 
+# Whether to filter the prompt set by the base model's refusal behavior before
+# evaluating: "keep_refused" keeps only prompts the model refuses, "drop_refused"
+# drops them, "none" disables filtering. Uses keyword_markers.
+filter_prompts = "none"
+
 # Dataset of prompts to evaluate the keyword match rate on.
 [scorer.KeywordRate.prompts]
 dataset = "mlabonne/harmful_behaviors"
@@ -221,6 +226,15 @@ column = "text"
 # `scorers` list above and `[scorer.KLDivergence_<instance_name>]` overrides.
 [scorer.KLDivergence]
 capture_position = "auto"
+
+# Whether to filter the prompt set by the base model's refusal behavior before
+# evaluating: "keep_refused" keeps only prompts the model refuses, "drop_refused"
+# drops them, "none" disables filtering. Uses refusal_markers.
+filter_prompts = "none"
+
+# Strings used to detect refusals when filter_prompts is enabled.
+# Defaults to the same markers as KeywordRate.keyword_markers.
+# refusal_markers = ["sorry", "i cannot", "as an ai", "harmful"]
 
 # Dataset of prompts used to measure KL divergence from original model.
 [scorer.KLDivergence.prompts]

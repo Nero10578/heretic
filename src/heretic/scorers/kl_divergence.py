@@ -8,8 +8,8 @@ from pydantic import BaseModel, Field
 
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
 from heretic.plugin import Context
-from heretic.scorer import Score, Scorer
-from heretic.utils import format_dataset_specification, print
+from heretic.scorer import Score, Scorer, apply_refusal_filter
+from heretic.utils import REFUSAL_MARKERS, format_dataset_specification, print
 
 
 class Settings(BaseModel):
@@ -30,6 +30,20 @@ class Settings(BaseModel):
             '"first_answer_token" (the first token after the reasoning block closes), '
             'or "auto" (follow the global generate_chain_of_thought setting).'
         ),
+    )
+
+    filter_prompts: Literal["none", "keep_refused", "drop_refused"] = Field(
+        default="none",
+        description=(
+            "Whether to filter the prompt set by the base model's refusal behavior before "
+            'evaluating: "keep_refused" keeps only prompts the model refuses, '
+            '"drop_refused" drops them, "none" disables filtering. Uses refusal_markers.'
+        ),
+    )
+
+    refusal_markers: list[str] = Field(
+        default=REFUSAL_MARKERS,
+        description="Strings used to detect refusals when filter_prompts is enabled.",
     )
 
 
@@ -66,6 +80,13 @@ class KLDivergence(Scorer):
         )
         self.prompts = ctx.load_prompts(self.settings.prompts)
         print(f"* [bold]{len(self.prompts)}[/] prompts loaded")
+
+        self.prompts = apply_refusal_filter(
+            ctx,
+            self.prompts,
+            self.settings.filter_prompts,
+            self.settings.refusal_markers,
+        )
 
         print("* Obtaining baseline probability distributions...")
         baseline_logits = ctx.get_logits(self.prompts, self._after_reasoning)

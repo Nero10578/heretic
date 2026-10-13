@@ -38,15 +38,19 @@ class Evaluator:
 
         print()
         print("Loading and initializing scorers...")
-        self._load_and_init_scorers()
+        # Share one Context between scorer init (prompt filtering) and baseline
+        # computation. Both run on the unmodified base model, so cached responses are
+        # valid for both and the same prompt sets aren't generated twice.
+        ctx = Context(settings=self.settings, model=self.model)
+        self._load_and_init_scorers(ctx)
 
         print()
         print("Getting baseline scores...")
-        self.baseline_scores = self.get_baseline_scores()
+        self.baseline_scores = self.get_baseline_scores(ctx)
         for name, score in self.baseline_scores:
             print(f"* Baseline [bold]{name}:[/] [green]{score.rich_display}[/]")
 
-    def _load_and_init_scorers(self) -> None:
+    def _load_and_init_scorers(self, ctx: Context) -> None:
         """
         Load and instantiate all configured scorer plugins,
         then runs their initialization hooks.
@@ -107,8 +111,6 @@ class Evaluator:
             )
 
         # Run scorer init hooks.
-        ctx = Context(settings=self.settings, model=self.model)
-
         for entry in self._scorer_entries:
             entry.scorer.init(ctx)
 
@@ -150,14 +152,13 @@ class Evaluator:
             (entry.name, entry.scorer.get_score(ctx)) for entry in self._scorer_entries
         ]
 
-    def get_baseline_scores(self) -> list[tuple[str, Score]]:
+    def get_baseline_scores(self, ctx: Context) -> list[tuple[str, Score]]:
         """
         Run all scorers and return their baseline scores and names
 
         Returns:
             List of `Score` from each scorer and its name.
         """
-        ctx = Context(settings=self.settings, model=self.model)
         return [
             (entry.name, entry.scorer.get_baseline_score(ctx))
             for entry in self._scorer_entries

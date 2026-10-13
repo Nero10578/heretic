@@ -17,7 +17,7 @@ n_trials = 400
 # Residuals/module I/O (the ablation direction) and KL logits are captured at
 # the first answer token, matching where the behavior of interest lives.
 generate_chain_of_thought = true
-max_thought_length = 8192
+max_thought_length = 4096
 
 # ---- Scorers ----
 # Refusals on harmful prompts, plus a 2x2 KL matrix:
@@ -26,8 +26,11 @@ max_thought_length = 8192
 # "first answer token" is the first token after the reasoning block closes.
 # Only KeywordRate and the harmless answer-anchored KL are optimized; the other
 # three are diagnostics ("none") that are still computed and shown per trial.
-# NOTE: "none" scorers still run every trial, so the answer-anchored ones are not
-# free (they generate the model's reasoning for their prompt set).
+#
+# filter_prompts trims each evaluation set by the base model's refusal behavior
+# (same detection as the modifier's filter_prompts): "keep_refused" keeps only
+# prompts the model actually refuses (harmful sets), "drop_refused" drops refused
+# prompts (harmless sets). This makes refusals/KL measure only relevant prompts.
 scorers = [
     { plugin = "heretic.scorers.keyword_rate.KeywordRate", optimization = "minimize" },
     { plugin = "heretic.scorers.kl_divergence.KLDivergence", optimization = "minimize", instance_name = "harmless-answer" },
@@ -36,8 +39,12 @@ scorers = [
     { plugin = "heretic.scorers.kl_divergence.KLDivergence", optimization = "none", instance_name = "harmful-first" },
 ]
 
+[scorer.KeywordRate]
+filter_prompts = "keep_refused"
+
 [scorer.KLDivergence_harmless-answer]
 capture_position = "first_answer_token"
+filter_prompts = "drop_refused"
 [scorer.KLDivergence_harmless-answer.prompts]
 dataset = "mlabonne/harmless_alpaca"
 split = "test[:100]"
@@ -45,6 +52,7 @@ column = "text"
 
 [scorer.KLDivergence_harmful-answer]
 capture_position = "first_answer_token"
+filter_prompts = "keep_refused"
 [scorer.KLDivergence_harmful-answer.prompts]
 dataset = "mlabonne/harmful_behaviors"
 split = "test[:100]"
@@ -52,6 +60,7 @@ column = "text"
 
 [scorer.KLDivergence_harmless-first]
 capture_position = "first_token"
+filter_prompts = "drop_refused"
 [scorer.KLDivergence_harmless-first.prompts]
 dataset = "mlabonne/harmless_alpaca"
 split = "test[:100]"
@@ -59,6 +68,7 @@ column = "text"
 
 [scorer.KLDivergence_harmful-first]
 capture_position = "first_token"
+filter_prompts = "keep_refused"
 [scorer.KLDivergence_harmful-first.prompts]
 dataset = "mlabonne/harmful_behaviors"
 split = "test[:100]"

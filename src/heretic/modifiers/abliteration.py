@@ -21,8 +21,7 @@ from torch import Tensor
 
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
 from heretic.modifier import Context, Modifier, Serializable
-from heretic.scorers.keyword_rate import REFUSAL_MARKERS
-from heretic.utils import format_dataset_specification, print
+from heretic.utils import REFUSAL_MARKERS, format_dataset_specification, print
 
 
 @dataclass

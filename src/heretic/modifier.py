@@ -17,7 +17,6 @@ from .config import (
 )
 from .model import Model
 from .plugin import Context, Plugin, load_plugin
-from .scorers.keyword_rate import is_keyword_match
 from .utils import Prompt, print
 
 
@@ -115,23 +114,21 @@ class Modifier(Plugin, ABC, Generic[Parameters]):
         print()
         print("Filtering prompts based on model refusals...")
 
-        bad_responses = ctx.get_responses(bad_prompts)
-        kept_bad = [
-            prompt
-            for prompt, response in zip(bad_prompts, bad_responses)
-            if is_keyword_match(response, refusal_markers)
-        ]
+        kept_bad = ctx.filter_prompts_by_refusal(
+            bad_prompts,
+            keep_refused=True,
+            refusal_markers=refusal_markers,
+        )
         print(
             f"* Harmful prompts: keeping [bold]{len(kept_bad)}[/]/{len(bad_prompts)} "
             "that are actually refused"
         )
 
-        good_responses = ctx.get_responses(good_prompts)
-        kept_good = [
-            prompt
-            for prompt, response in zip(good_prompts, good_responses)
-            if not is_keyword_match(response, refusal_markers)
-        ]
+        kept_good = ctx.filter_prompts_by_refusal(
+            good_prompts,
+            keep_refused=False,
+            refusal_markers=refusal_markers,
+        )
         print(
             f"* Harmless prompts: keeping [bold]{len(kept_good)}[/]/{len(good_prompts)} "
             "that are not refused"
