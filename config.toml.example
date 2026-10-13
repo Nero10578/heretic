@@ -7,8 +7,13 @@
 # ---- Top-level settings ----
 max_response_length = 300
 export_strategy = "adapter"
+
+# Fixed batch size (non-zero skips auto-tuning; 0 = auto).
+batch_size = 32
 n_trials = 100
-n-startup-trials = 30
+
+# Use underscores, not dashes, in config.toml (dashes are only for CLI flags).
+n_startup_trials = 30
 
 # Let the model generate its own reasoning (as dictated by its chat template)
 # instead of pre-filling a closed reasoning block. Refusals are then detected
