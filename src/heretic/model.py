@@ -70,6 +70,7 @@ class Model:
         self.settings = settings
         self.needs_reload = False
         self._cot_close_tag_ids_cache: list[list[int]] | None = None
+        self._unfinished_reasoning_dumped = False
 
         self.revision_kwargs = {}
         if settings.model_commit is not None:
@@ -639,11 +640,35 @@ class Model:
         # (refusal detection) never sees the chain of thought.
         responses: list[str] = []
         unfinished = 0
-        for row in generated:
+        for index, row in enumerate(generated):
             answer_ids, was_unfinished = self._answer_token_ids_with_status(
                 row.tolist()
             )
             unfinished += int(was_unfinished)
+
+            if (
+                was_unfinished
+                and self.settings.print_debug_information
+                and not self._unfinished_reasoning_dumped
+            ):
+                # One-shot dump to diagnose why reasoning never closed.
+                self._unfinished_reasoning_dumped = True
+                prompt_text = self._build_chat_prompts([prompts[index]])[0]
+                raw = cast(
+                    str,
+                    self.tokenizer.decode(row.tolist(), skip_special_tokens=False),
+                )
+                print()
+                print("Debug: reasoning never closed (one-shot dump).", markup=False)
+                print(
+                    f"* Expected closing tag ids: {self._reasoning_close_tag_ids()}",
+                    markup=False,
+                )
+                print(f"* Prompt tail: {prompt_text[-200:]!r}", markup=False)
+                print(f"* {len(row)} tokens generated", markup=False)
+                print(f"* Raw head: {raw[:300]!r}", markup=False)
+                print(f"* Raw tail: {raw[-400:]!r}", markup=False)
+
             responses.append(
                 cast(
                     str,
