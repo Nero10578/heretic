@@ -131,11 +131,13 @@ class RepetitionStoppingLogitsProcessor(LogitsProcessor):
         self,
         prompt_length: int,
         eos_token_ids: list[int],
+        pad_token_id: int | None,
         period_max: int,
         min_repeats: int,
     ) -> None:
         self._prompt_length = prompt_length
         self._eos_token_ids = eos_token_ids
+        self._pad_token_id = pad_token_id
         self._period_max = period_max
         self._min_repeats = min_repeats
         self._aborted_rows: set[int] = set()
@@ -145,19 +147,29 @@ class RepetitionStoppingLogitsProcessor(LogitsProcessor):
         return self._aborted_rows
 
     def __call__(self, input_ids: Tensor, scores: Tensor) -> Tensor:
-        generated_length = input_ids.shape[1] - self._prompt_length
+        generated = input_ids[:, self._prompt_length :]
+        generated_length = generated.shape[1]
         if generated_length <= 0 or not self._eos_token_ids:
             return scores
 
-        repetitive = torch.zeros(
+        # Rows that already finished are padded with the pad token after their EOS, so
+        # their tails are full of repeated pad tokens. Those must not count as loops.
+        finished = torch.zeros(
             input_ids.shape[0], dtype=torch.bool, device=input_ids.device
         )
+        for eos_token_id in self._eos_token_ids:
+            finished |= (generated == eos_token_id).any(dim=1)
+        if self._pad_token_id is not None:
+            finished |= (generated == self._pad_token_id).any(dim=1)
+
+        repetitive = torch.zeros_like(finished)
         for period in range(1, self._period_max + 1):
             needed = period * self._min_repeats
             if needed > generated_length:
                 continue
-            tail = input_ids[:, -needed:]
+            tail = generated[:, -needed:]
             repetitive |= (tail[:, period:] == tail[:, :-period]).all(dim=1)
+        repetitive &= ~finished
 
         if repetitive.any():
             self._aborted_rows.update(
@@ -763,6 +775,7 @@ class Model:
             repetition_processor = RepetitionStoppingLogitsProcessor(
                 prompt_length=cast(Tensor, inputs["input_ids"]).shape[1],
                 eos_token_ids=self._eos_token_ids(),
+                pad_token_id=self.tokenizer.pad_token_id,
                 period_max=self.settings.repetition_period_max,
                 min_repeats=self.settings.repetition_min_repeats,
             )

@@ -18,6 +18,7 @@ class RepetitionProcessorTests(unittest.TestCase):
         return RepetitionStoppingLogitsProcessor(
             prompt_length=prompt_length,
             eos_token_ids=[9],
+            pad_token_id=0,
             period_max=period_max,
             min_repeats=min_repeats,
         )
@@ -33,6 +34,13 @@ class RepetitionProcessorTests(unittest.TestCase):
         processor = self.make()
         processor(torch.tensor([[7, 5, 6, 5, 6, 5, 6]]), torch.zeros((1, 10)))
         self.assertEqual(processor.aborted_rows, {0})
+
+    def test_ignores_finished_padded_rows(self) -> None:
+        # After EOS the row is padded, so its tail is identical pad tokens. This must
+        # not be mistaken for a repetition loop.
+        processor = self.make()
+        processor(torch.tensor([[7, 5, 5, 5, 5, 9, 0, 0, 0]]), torch.zeros((1, 10)))
+        self.assertEqual(processor.aborted_rows, set())
 
     def test_does_not_abort_normal_output(self) -> None:
         processor = self.make()
