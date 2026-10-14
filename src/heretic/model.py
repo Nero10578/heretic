@@ -65,16 +65,49 @@ class GenerationRecord:
     """
     Result of generating a response for a single prompt.
 
-    Besides the decoded answer, it retains the token IDs up to the answer-capture
-    position. Keeping both in one record lets response decoding (refusal/keyword
-    scoring) and logit or residual capture share a single generation instead of
-    regenerating the reasoning for each.
+    Besides the decoded answer, it retains the token IDs up to two capture positions:
+    the first answer token (after the reasoning block closes), and the first token of
+    the response that is not part of the model's thinking-start marker. Keeping these in
+    one record lets response decoding (refusal/keyword scoring) and logit or residual
+    capture share a single generation instead of regenerating the reasoning for each.
     """
 
     response: str
     capture_ids: list[int]
+    first_content_ids: list[int]
     unfinished: bool
     generated_token_count: int
+
+
+def reasoning_start_skip_length(
+    prompt_ids: list[int],
+    generated_ids: list[int],
+    markers: list[str],
+    decode: Callable[[list[int]], str],
+    special_token_ids: set[int],
+    probe_tokens: int = 8,
+    window_tokens: int = 128,
+) -> int:
+    """
+    Number of leading generated tokens to skip to reach the first token that carries
+    content, rather than part of the model's thinking-start marker (e.g. the
+    `<|channel>thought` opener).
+
+    The marker is found by decoding the prompt plus growing prefixes of the generation
+    and checking whether the text ends with one of the configured markers. Decoding
+    avoids depending on how the model happens to split the marker into tokens, or
+    whether those tokens are special, and it also handles a marker that the template
+    already opened. If no marker is found, leading special tokens are skipped.
+    """
+    for skip in range(1, min(len(generated_ids), probe_tokens) + 1):
+        text = decode((prompt_ids + generated_ids[:skip])[-window_tokens:])
+        if any(text.endswith(marker) for marker in markers):
+            return skip
+
+    skip = 0
+    while skip < len(generated_ids) and generated_ids[skip] in special_token_ids:
+        skip += 1
+    return skip
 
 
 class Model:
@@ -89,6 +122,7 @@ class Model:
         self.settings = settings
         self.needs_reload = False
         self._cot_close_tag_ids_cache: list[list[int]] | None = None
+        self._special_token_ids_cache: set[int] | None = None
         self._unfinished_reasoning_dumped = False
 
         self.revision_kwargs = {}
@@ -690,9 +724,11 @@ class Model:
                 answer_ids, capture_ids, unfinished = self._answer_and_capture_ids(
                     prompt_ids, row
                 )
+                first_content_ids = self._first_content_ids(prompt_ids, row)
             else:
                 answer_ids = row[: self.settings.max_response_length]
                 capture_ids = prompt_ids + answer_ids
+                first_content_ids = prompt_ids
                 unfinished = False
 
             if (
@@ -728,6 +764,7 @@ class Model:
                         ),
                     ),
                     capture_ids=capture_ids,
+                    first_content_ids=first_content_ids,
                     unfinished=unfinished,
                     generated_token_count=len(row),
                 )
@@ -806,6 +843,35 @@ class Model:
                     tag_ids.append(list(ids))
             self._cot_close_tag_ids_cache = tag_ids
         return self._cot_close_tag_ids_cache
+
+    def _reasoning_start_markers(self) -> list[str]:
+        """
+        The strings that open a chain-of-thought block, i.e. the model's thinking-start
+        marker, taken from the initializer part of each `chain_of_thought_skips` pair.
+        """
+        return [
+            initializer for initializer, _ in self.settings.chain_of_thought_skips
+        ]
+
+    def _special_token_ids(self) -> set[int]:
+        if self._special_token_ids_cache is None:
+            self._special_token_ids_cache = set(self.tokenizer.all_special_ids)
+        return self._special_token_ids_cache
+
+    def _first_content_ids(self, prompt_ids: list[int], generated_ids: list[int]) -> list[int]:
+        """
+        Token IDs up to (but not including) the first token that is not part of the
+        model's thinking-start marker. The distribution captured there is over the first
+        token that actually carries content, instead of the (near-deterministic) marker.
+        """
+        skip = reasoning_start_skip_length(
+            prompt_ids,
+            generated_ids,
+            self._reasoning_start_markers(),
+            lambda ids: cast(str, self.tokenizer.decode(ids, skip_special_tokens=False)),
+            self._special_token_ids(),
+        )
+        return prompt_ids + generated_ids[:skip]
 
     def _answer_start_index(self, generated_ids: list[int]) -> int | None:
         """

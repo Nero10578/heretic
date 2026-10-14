@@ -26,9 +26,11 @@ class Settings(BaseModel):
         default="auto",
         description=(
             'Which next-token distribution to compare against the baseline: '
-            '"first_token" (start of the response, i.e. the start of reasoning), '
-            '"first_answer_token" (the first token after the reasoning block closes), '
-            'or "auto" (follow the global generate_chain_of_thought setting).'
+            '"first_token" (the first token of the response that is not part of the '
+            "model's thinking-start marker, e.g. the first reasoning token rather than "
+            'the marker itself), "first_answer_token" (the first token after the '
+            "reasoning block closes), or \"auto\" (follow the global "
+            "generate_chain_of_thought setting)."
         ),
     )
 

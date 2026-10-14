@@ -222,14 +222,24 @@ class Context:
         if after_reasoning is None:
             after_reasoning = self._settings.generate_chain_of_thought
 
-        if not after_reasoning:
+        # Reuse the reasoning already generated for these prompts (e.g. for refusal
+        # filtering) instead of regenerating it to locate the capture position.
+        if after_reasoning:
+            # First answer token: the token after the reasoning block closes.
+            capture_ids = [
+                record.capture_ids for record in self.get_generation_records(prompts)
+            ]
+        elif self._settings.generate_chain_of_thought:
+            # First response token: skip the model's thinking-start marker so that the
+            # captured distribution is over the first token that carries content, rather
+            # than the (near-deterministic) marker token.
+            capture_ids = [
+                record.first_content_ids
+                for record in self.get_generation_records(prompts)
+            ]
+        else:
             return self._model.get_logits_batched(prompts, after_reasoning)
 
-        # Reuse the reasoning already generated for these prompts (e.g. for refusal
-        # filtering) instead of regenerating it to locate the answer position.
-        capture_ids = [
-            record.capture_ids for record in self.get_generation_records(prompts)
-        ]
         return torch.cat(
             [
                 self._model.get_logits_from_capture_ids(batch)

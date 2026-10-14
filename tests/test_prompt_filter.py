@@ -22,6 +22,7 @@ class FakeModel:
             GenerationRecord(
                 response=response,
                 capture_ids=[],
+                first_content_ids=[],
                 unfinished=False,
                 generated_token_count=0,
             )

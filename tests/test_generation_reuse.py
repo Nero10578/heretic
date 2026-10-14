@@ -29,6 +29,7 @@ class FakeModel:
             GenerationRecord(
                 response="response",
                 capture_ids=[1, 2, 3],
+                first_content_ids=[4, 5, 6],
                 unfinished=False,
                 generated_token_count=1,
             )
@@ -36,7 +37,9 @@ class FakeModel:
         ]
 
     def get_logits_from_capture_ids(self, capture_ids: list[list[int]]) -> torch.Tensor:
-        assert all(ids == [1, 2, 3] for ids in capture_ids)
+        assert all(
+            ids in ([1, 2, 3], [4, 5, 6]) for ids in capture_ids
+        )
         return torch.zeros((len(capture_ids), 4))
 
     def get_logits_batched(
@@ -88,6 +91,16 @@ class GenerationReuseTests(unittest.TestCase):
         ctx.get_responses([Prompt("s", "b"), Prompt("s", "c")])
 
         self.assertEqual(model.generated_batches, [["a", "b"], ["c"]])
+
+    def test_first_token_capture_uses_first_content_ids(self) -> None:
+        ctx, model = self.make_ctx()
+        prompts = [Prompt("s", "a")]
+
+        ctx.get_responses(prompts)
+        logits = ctx.get_logits(prompts, after_reasoning=False)
+
+        self.assertEqual(model.generated_batches, [["a"]])
+        self.assertEqual(tuple(logits.shape), (1, 4))
 
     def test_module_io_reuses_generation(self) -> None:
         ctx, model = self.make_ctx()
