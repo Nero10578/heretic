@@ -24,6 +24,7 @@ class FakeModel:
                 capture_ids=[],
                 first_content_ids=[],
                 unfinished=False,
+                repetition_aborted=False,
                 generated_token_count=0,
             )
             for response in self.responses

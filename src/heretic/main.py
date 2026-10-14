@@ -86,7 +86,7 @@ from .config import (
     QuantizationMethod,
 )
 from .evaluator import Evaluator
-from .model import Model, get_model_class
+from .model import Model, RepetitionLoopError, get_model_class
 from .modifier import load_and_init_modifiers
 from .plugin import Context, is_builtin_plugin
 from .reproduce import (
@@ -660,6 +660,13 @@ def run():
             # Stop the study gracefully on Ctrl+C.
             trial.study.stop()
             raise TrialPruned()
+        except RepetitionLoopError as error:
+            # A model this broken cannot be scored meaningfully, so prune the trial
+            # instead of spending more time evaluating it.
+            print()
+            print(f"[yellow]Pruning trial: {error}.[/]")
+            print("[yellow]Skipping to the next trial.[/]")
+            raise TrialPruned() from error
 
     # Derive objective info from the configured scorers.
     objective_names = evaluator.get_objective_names()

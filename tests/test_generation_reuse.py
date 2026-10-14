@@ -31,6 +31,7 @@ class FakeModel:
                 capture_ids=[1, 2, 3],
                 first_content_ids=[4, 5, 6],
                 unfinished=False,
+                repetition_aborted=False,
                 generated_token_count=1,
             )
             for _ in prompts

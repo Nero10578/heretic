@@ -19,6 +19,8 @@ from transformers import (
     AutoTokenizer,
     BatchEncoding,
     BitsAndBytesConfig,
+    LogitsProcessor,
+    LogitsProcessorList,
     PretrainedConfig,
     PreTrainedModel,
     PreTrainedTokenizerBase,
@@ -76,6 +78,7 @@ class GenerationRecord:
     capture_ids: list[int]
     first_content_ids: list[int]
     unfinished: bool
+    repetition_aborted: bool
     generated_token_count: int
 
 
@@ -108,6 +111,62 @@ def reasoning_start_skip_length(
     while skip < len(generated_ids) and generated_ids[skip] in special_token_ids:
         skip += 1
     return skip
+
+
+class RepetitionLoopError(Exception):
+    """
+    Raised when a generation is so dominated by repetition loops that the trial cannot be
+    scored meaningfully. The optimization loop prunes the trial in response.
+    """
+
+
+class RepetitionStoppingLogitsProcessor(LogitsProcessor):
+    """
+    Forces end-of-sequence for any row whose generated tokens have fallen into a
+    repetition loop, so a broken model stops instead of emitting the full token budget
+    of gibberish. The prompt length is subtracted out so the prompt text is ignored.
+    """
+
+    def __init__(
+        self,
+        prompt_length: int,
+        eos_token_ids: list[int],
+        period_max: int,
+        min_repeats: int,
+    ) -> None:
+        self._prompt_length = prompt_length
+        self._eos_token_ids = eos_token_ids
+        self._period_max = period_max
+        self._min_repeats = min_repeats
+        self._aborted_rows: set[int] = set()
+
+    @property
+    def aborted_rows(self) -> set[int]:
+        return self._aborted_rows
+
+    def __call__(self, input_ids: Tensor, scores: Tensor) -> Tensor:
+        generated_length = input_ids.shape[1] - self._prompt_length
+        if generated_length <= 0 or not self._eos_token_ids:
+            return scores
+
+        repetitive = torch.zeros(
+            input_ids.shape[0], dtype=torch.bool, device=input_ids.device
+        )
+        for period in range(1, self._period_max + 1):
+            needed = period * self._min_repeats
+            if needed > generated_length:
+                continue
+            tail = input_ids[:, -needed:]
+            repetitive |= (tail[:, period:] == tail[:, :-period]).all(dim=1)
+
+        if repetitive.any():
+            self._aborted_rows.update(
+                repetitive.nonzero(as_tuple=False).flatten().tolist()
+            )
+            for eos_token_id in self._eos_token_ids:
+                scores[repetitive, eos_token_id] = float("inf")
+
+        return scores
 
 
 class Model:
@@ -696,9 +755,23 @@ class Model:
         lets refusal scoring and logit/residual capture reuse a single generation
         instead of regenerating the reasoning separately.
         """
-        inputs, outputs = self.generate(
-            prompts,
+        inputs = self._tokenize_prompts(prompts)
+
+        repetition_processor = None
+        extra_kwargs: dict[str, Any] = {}
+        if self.settings.abort_repeating_generation:
+            repetition_processor = RepetitionStoppingLogitsProcessor(
+                prompt_length=cast(Tensor, inputs["input_ids"]).shape[1],
+                eos_token_ids=self._eos_token_ids(),
+                period_max=self.settings.repetition_period_max,
+                min_repeats=self.settings.repetition_min_repeats,
+            )
+            extra_kwargs["logits_processor"] = LogitsProcessorList([repetition_processor])
+
+        outputs = self._generate_from_inputs(
+            inputs,
             max_new_tokens=self._response_max_new_tokens(),
+            **extra_kwargs,
         )
 
         # This cast is valid because input_ids is a Tensor
@@ -708,6 +781,11 @@ class Model:
         generated = outputs[:, input_ids.shape[1] :]
         pad_id = self.tokenizer.pad_token_id
 
+        repetition_aborted_rows = (
+            repetition_processor.aborted_rows
+            if repetition_processor is not None
+            else set()
+        )
         records: list[GenerationRecord] = []
 
         for index, row in enumerate(generated.tolist()):
@@ -766,6 +844,7 @@ class Model:
                     capture_ids=capture_ids,
                     first_content_ids=first_content_ids,
                     unfinished=unfinished,
+                    repetition_aborted=index in repetition_aborted_rows,
                     generated_token_count=len(row),
                 )
             )
@@ -857,6 +936,14 @@ class Model:
         if self._special_token_ids_cache is None:
             self._special_token_ids_cache = set(self.tokenizer.all_special_ids)
         return self._special_token_ids_cache
+
+    def _eos_token_ids(self) -> list[int]:
+        eos = self.model.generation_config.eos_token_id
+        if eos is None:
+            eos = self.tokenizer.eos_token_id
+        if eos is None:
+            return []
+        return list(eos) if isinstance(eos, (list, tuple)) else [eos]
 
     def _first_content_ids(self, prompt_ids: list[int], generated_ids: list[int]) -> list[int]:
         """
@@ -967,6 +1054,7 @@ class Model:
     ) -> list[GenerationRecord]:
         records: list[GenerationRecord] = []
         unfinished = 0
+        repetition_aborted = 0
         max_generated = 0
 
         for batch in batchify(prompts, self.settings.batch_size):
@@ -976,12 +1064,23 @@ class Model:
             )
             records.extend(batch_records)
             unfinished += sum(record.unfinished for record in batch_records)
+            repetition_aborted += sum(
+                record.repetition_aborted for record in batch_records
+            )
             max_generated = max(
                 max_generated,
                 max(
                     (record.generated_token_count for record in batch_records),
                     default=0,
                 ),
+            )
+
+        if repetition_aborted:
+            print()
+            print(
+                f"[yellow]Warning:[/] {repetition_aborted}/{len(prompts)} responses were "
+                "stopped early because they fell into a repetition loop. Broken models "
+                "otherwise generate the full token budget of gibberish."
             )
 
         if unfinished:
@@ -1002,6 +1101,17 @@ class Model:
                 f"[yellow]Warning:[/] {unfinished}/{len(prompts)} responses have an empty "
                 f"answer because the reasoning block never closed: {reason}. Empty "
                 "responses are counted as refusals."
+            )
+
+        if (
+            repetition_aborted
+            and self.settings.abort_broken_trials
+            and repetition_aborted / len(prompts)
+            >= self.settings.abort_broken_trial_fraction
+        ):
+            raise RepetitionLoopError(
+                f"{repetition_aborted}/{len(prompts)} responses fell into repetition "
+                "loops, indicating a broken model"
             )
 
         return records

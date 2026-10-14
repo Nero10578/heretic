@@ -342,6 +342,52 @@ class Settings(BaseSettings):
         ),
     )
 
+    abort_repeating_generation: bool = Field(
+        default=True,
+        description=(
+            "If true, stop generating for a prompt as soon as its output falls into a "
+            "repetition loop (the last repetition_min_repeats cycles of length up to "
+            "repetition_period_max are identical). Broken models otherwise burn the full "
+            "token budget emitting gibberish. Truncated responses are treated as refusals."
+        ),
+    )
+
+    repetition_period_max: PositiveInt = Field(
+        default=16,
+        description=(
+            "Maximum length of the repeated cycle used for repetition-loop detection."
+        ),
+    )
+
+    repetition_min_repeats: PositiveInt = Field(
+        default=12,
+        description=(
+            "How many identical consecutive cycles of length up to repetition_period_max "
+            "must appear before a repetition loop is detected."
+        ),
+    )
+
+    abort_broken_trials: bool = Field(
+        default=False,
+        description=(
+            "If true, prune the whole trial when at least abort_broken_trial_fraction of "
+            "a generation's prompts were stopped by repetition-loop detection. Pruning "
+            "saves the rest of the trial's evaluation but records no score, so the "
+            "optimizer gets no signal for that region. By default the trial is scored "
+            "instead: a looping model refuses everything (empty answers count as "
+            "refusals), so it is already the worst result and steers the search away."
+        ),
+    )
+
+    abort_broken_trial_fraction: float = Field(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction of repetition-stopped prompts above which the trial is pruned."
+        ),
+    )
+
     chat_template_kwargs: dict[str, Any] = Field(
         default_factory=dict,
         description=(

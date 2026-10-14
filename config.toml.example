@@ -31,6 +31,16 @@ attn_implementation = "auto"
 generate_chain_of_thought = true
 max_thought_length = 8192
 
+# Abort a prompt's generation as soon as it falls into a repetition loop, so a broken
+# model doesn't burn the full token budget. Such responses are counted as refusals.
+# Optionally prune the whole trial when at least abort_broken_trial_fraction of prompts
+# loop; off by default so the optimizer still gets the (worst-case) score for that region.
+abort_repeating_generation = true
+repetition_period_max = 16
+repetition_min_repeats = 12
+abort_broken_trials = false
+abort_broken_trial_fraction = 0.9
+
 # Gemma 4's chat template only starts reasoning when enable_thinking is set;
 # without it, the template opens and immediately closes the thought channel and
 # the model answers directly. Forwarded to apply_chat_template.
