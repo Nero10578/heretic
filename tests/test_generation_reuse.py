@@ -70,7 +70,11 @@ class GenerationReuseTests(unittest.TestCase):
     def make_ctx(self) -> tuple[Context, FakeModel]:
         settings = cast(
             HereticSettings,
-            SimpleNamespace(batch_size=32, generate_chain_of_thought=True),
+            SimpleNamespace(
+                batch_size=32,
+                capture_batch_size=8,
+                generate_chain_of_thought=True,
+            ),
         )
         model = FakeModel()
         return Context(settings, cast(Model, model)), model

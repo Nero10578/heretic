@@ -10,6 +10,12 @@ export_strategy = "adapter"
 
 # Fixed batch size (non-zero skips auto-tuning; 0 = auto).
 batch_size = 32
+
+# Batch size for the capture forwards (KL logits, residuals, module I/O). These run one
+# forward over prompt + full reasoning, so their peak VRAM and kernel size scale with
+# batch times sequence length. Keep small to avoid OOM / driver launch timeouts.
+capture_batch_size = 8
+
 n_trials = 100
 n_startup_trials = 30
 print_debug_information = true

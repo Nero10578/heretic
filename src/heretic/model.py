@@ -1197,11 +1197,11 @@ class Model:
         winsorization_quantile: float = 1.0,
         capture_ids: list[list[int]] | None = None,
     ) -> Tensor:
-        prompt_batches = batchify(prompts, self.settings.batch_size)
+        prompt_batches = batchify(prompts, self.settings.capture_batch_size)
         capture_id_batches: list[list[list[int]] | None] = (
             [None] * len(prompt_batches)
             if capture_ids is None
-            else list(batchify(capture_ids, self.settings.batch_size))
+            else list(batchify(capture_ids, self.settings.capture_batch_size))
         )
 
         residuals = [
@@ -1224,11 +1224,11 @@ class Model:
         if not prompts:
             raise ValueError("prompts must not be empty")
 
-        prompt_batches = batchify(prompts, self.settings.batch_size)
+        prompt_batches = batchify(prompts, self.settings.capture_batch_size)
         capture_id_batches: list[list[list[int]] | None] = (
             [None] * len(prompt_batches)
             if capture_ids is None
-            else list(batchify(capture_ids, self.settings.batch_size))
+            else list(batchify(capture_ids, self.settings.capture_batch_size))
         )
 
         running_sum = None
@@ -1345,11 +1345,11 @@ class Model:
         # can depend on the prompt (in particular for MoE models).
         # In practice, inhomogeneous results should be very rare, but to be fully
         # generic, this logic is required.
-        prompt_batches = batchify(prompts, self.settings.batch_size)
+        prompt_batches = batchify(prompts, self.settings.capture_batch_size)
         capture_id_batches: list[list[list[int]] | None] = (
             [None] * len(prompt_batches)
             if capture_ids is None
-            else list(batchify(capture_ids, self.settings.batch_size))
+            else list(batchify(capture_ids, self.settings.capture_batch_size))
         )
         module_io_batches: list[ModuleIO] = [
             self.get_module_io(batch, ids)

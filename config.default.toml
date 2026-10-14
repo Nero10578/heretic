@@ -45,6 +45,12 @@ offload_outputs_to_cpu = true
 # Number of input sequences to process in parallel (0 = auto).
 batch_size = 0  # auto
 
+# Batch size for the capture forwards (KL logits, residuals, module I/O). These run one
+# forward over the whole prompt plus reasoning, so their peak VRAM and kernel size scale
+# with batch times sequence length. Keep this small to avoid out-of-memory errors and
+# driver launch timeouts when reasoning is long; generation still uses batch_size.
+capture_batch_size = 8
+
 # Maximum batch size to try when automatically determining the optimal batch size.
 max_batch_size = 128
 

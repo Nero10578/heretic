@@ -243,7 +243,9 @@ class Context:
         return torch.cat(
             [
                 self._model.get_logits_from_capture_ids(batch)
-                for batch in batchify(capture_ids, self._settings.batch_size)
+                for batch in batchify(
+                    capture_ids, self._settings.capture_batch_size
+                )
             ],
             dim=0,
         )

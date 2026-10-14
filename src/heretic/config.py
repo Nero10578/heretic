@@ -297,6 +297,17 @@ class Settings(BaseSettings):
         description="Number of input sequences to process in parallel (0 = auto).",
     )
 
+    capture_batch_size: PositiveInt = Field(
+        default=8,
+        description=(
+            "Batch size for the capture forwards (KL logits, residuals, module I/O). "
+            "These run one forward over the whole prompt plus reasoning, so their peak "
+            "VRAM and kernel size scale with the batch times the sequence length. A "
+            "smaller value than batch_size avoids out-of-memory errors and driver "
+            "launch timeouts on long reasoning, at little throughput cost."
+        ),
+    )
+
     max_batch_size: PositiveInt = Field(
         default=128,
         description="Maximum batch size to try when automatically determining the optimal batch size.",
