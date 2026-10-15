@@ -95,13 +95,13 @@ scorers = [
 # alone (and the bf16 editor and a quantized vLLM copy can share a single smaller GPU).
 [vllm]
 enabled = true
-model = ""                       # empty = main model; may point at a pre-quantized base
+model = "/home/arli/models/gemma-4-31B-it-AWQ-8bit"   # empty = main model
 park_editor = true               # move the HF model to CPU after init so vLLM owns the GPU
 mode = "inprocess"               # only "inprocess" is implemented
-dtype = "auto"                   # "auto", "bfloat16", or a quant method such as "fp8"/"gptq"
+dtype = "auto"                   # "auto" = use the checkpoint's own dtype/quantization
 tensor_parallel_size = 1
-gpu_memory_utilization = 0.9
-max_model_len = 0                # 0 = derive from the model
+gpu_memory_utilization = 0.9     # lower this if the ARA staging step OOMs during trials
+max_model_len = 8192             # 0 = derive from the model; must fit prompt + max tokens
 max_lora_rank = 128              # must be >= modifier.ARA.lora_rank
 
 [scorer.KeywordRate]
