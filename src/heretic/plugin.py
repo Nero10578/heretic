@@ -25,7 +25,12 @@ import torch.nn.functional as F
 from pydantic import BaseModel
 from torch import Tensor
 
-from .cache import InitCache, environment_key, plugin_namespace
+from .cache import (
+    InitCache,
+    environment_key,
+    environment_payload,
+    plugin_namespace,
+)
 from .config import DatasetSpecification, SingleDatasetSpecification
 from .config import Settings as HereticSettings
 from .inference import HFBackend, InferenceBackend
@@ -639,6 +644,10 @@ class Plugin:
                 include_backend=self.backend_dependent_init,
             ),
             namespace=plugin_namespace(self.__class__.__name__, self.settings),
+            environment_payload=environment_payload(
+                self.heretic_settings,
+                include_backend=self.backend_dependent_init,
+            ),
         )
 
     @property

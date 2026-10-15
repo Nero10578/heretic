@@ -4,7 +4,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import torch
 
@@ -157,6 +157,58 @@ class PluginCacheTests(unittest.TestCase):
             cache.path.parent.name,
             environment_key(settings, include_backend=False),
         )
+
+
+class FallbackCacheTests(unittest.TestCase):
+    def test_find_alternatives_lists_other_environments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            InitCache(directory, "old", "ns").save({"value": 1})
+            current = InitCache(directory, "current", "ns")
+            alternatives = current.find_alternatives()
+            self.assertEqual(
+                [environment for environment, _, _ in alternatives], ["old"]
+            )
+
+    def test_load_with_fallback_uses_consented_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            InitCache(directory, "old", "ns").save({"value": 1})
+            current = InitCache(directory, "current", "ns")
+            payload = current.load_with_fallback("X", decide=lambda alts: 0)
+            assert payload is not None
+            self.assertEqual(payload["value"], 1)
+
+    def test_load_with_fallback_declined_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            InitCache(directory, "old", "ns").save({"value": 1})
+            current = InitCache(directory, "current", "ns")
+            self.assertIsNone(current.load_with_fallback("X", decide=lambda alts: None))
+
+    def test_load_with_fallback_without_alternatives_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            current = InitCache(directory, "current", "ns")
+            self.assertIsNone(current.load_with_fallback("X", decide=lambda alts: 0))
+
+    def test_exact_hit_does_not_consult_decide(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            current = InitCache(directory, "current", "ns")
+            current.save({"value": 2})
+
+            def fail(alternatives: object) -> int | None:
+                raise AssertionError("decide must not be called on an exact hit")
+
+            payload = current.load_with_fallback("X", decide=fail)
+            assert payload is not None
+            self.assertEqual(payload["value"], 2)
+
+    def test_describe_differences(self) -> None:
+        cache = InitCache(
+            "directory", "env", "ns", environment_payload={"a": 1, "b": 2}
+        )
+        metadata: dict[str, Any] = {"a": 1, "b": 3}
+        described = cache.describe_differences(metadata)
+        self.assertEqual(len(described), 1)
+        self.assertIn("b", described[0])
+        self.assertIn("unknown", cache.describe_differences(None)[0])
 
 
 class _FakeModelShim:

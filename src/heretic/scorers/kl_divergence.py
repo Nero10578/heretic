@@ -88,7 +88,7 @@ class KLDivergence(Scorer):
         cache = self.init_cache()
 
         if cache is not None:
-            cached = cache.load()
+            cached = cache.load_with_fallback(self.score_name)
             if cached is not None:
                 self.prompts = [
                     Prompt(system=system, user=user)

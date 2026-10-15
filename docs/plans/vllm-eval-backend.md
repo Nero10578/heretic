@@ -379,6 +379,12 @@ GPU hosts.
   (`Plugin.backend_dependent_init = False`; `Scorer` overrides it to True), so changing
   the vLLM model reuses ARA's module-I/O capture and only recomputes the scorer baselines.
   Trials scored before and after the swap are not directly comparable.
+- **Mismatched-cache reuse.** On a cache miss, `InitCache.load_with_fallback` discovers
+  entries for the same plugin under other environment keys, prints the settings that
+  differ, and (interactively, or via an injected `decide`) reuses one if asked. Guards
+  against a code edit or a settings change silently costing hours of re-initialization.
+  Environment payloads are now recorded as `_environment.json` sidecars so a mismatch can
+  be explained (`environment_payload`/`environment_key` split in `cache.py`).
 - **Outstanding.** Phase 4 (docs), tensor parallel / server mode, adapter lifecycle at
   scale, and GPU validation of the engine, adapter hot-swap, and editor parking (risks 3
   and 4 in section 9).

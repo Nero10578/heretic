@@ -206,7 +206,7 @@ class ARA(Modifier[Parameters]):
 
         cache = self.init_cache()
         if cache is not None:
-            cached = cache.load()
+            cached = cache.load_with_fallback(self.modifier_name)
             if cached is not None:
                 self.good_prompt_count = cached["good_prompt_count"]
                 self.bad_prompt_count = cached["bad_prompt_count"]
