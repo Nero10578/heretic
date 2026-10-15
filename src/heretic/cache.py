@@ -336,7 +336,13 @@ class InitCache:
         # treat anything outside the candidate range as a decline.
         if not isinstance(index, int) or not 0 <= index < len(alternatives):
             return None
-        return _load_cache_file(alternatives[index][1])
+
+        payload = _load_cache_file(alternatives[index][1])
+        if payload is not None:
+            # Promote the reused entry to the current environment key so subsequent runs
+            # get an exact hit instead of prompting again.
+            self.save(payload)
+        return payload
 
     def _ask_for_alternative(
         self, label: str

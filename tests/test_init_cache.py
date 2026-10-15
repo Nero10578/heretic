@@ -188,6 +188,20 @@ class FallbackCacheTests(unittest.TestCase):
             current = InitCache(directory, "current", "ns")
             self.assertIsNone(current.load_with_fallback("X", decide=lambda alts: 0))
 
+    def test_consented_reuse_is_promoted_to_current_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            InitCache(directory, "old", "ns").save({"value": 1})
+            current = InitCache(directory, "current", "ns")
+
+            payload = current.load_with_fallback("X", decide=lambda alts: 0)
+            assert payload is not None
+            self.assertEqual(payload["value"], 1)
+
+            # The entry is now an exact hit, so no decision is needed on the next run.
+            promoted = current.load()
+            assert promoted is not None
+            self.assertEqual(promoted["value"], 1)
+
     def test_load_with_fallback_rejects_out_of_range_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             InitCache(directory, "old", "ns").save({"value": 1})
