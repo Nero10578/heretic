@@ -178,6 +178,40 @@ max_shard_size = "5GB"
 # System prompt to use when prompting the model.
 system_prompt = "You are a helpful assistant."
 
+# Optional vLLM inference backend for scoring. When enabled and every configured scorer
+# is text-only (no KL logits/residuals/module I/O), the per-trial evaluation is generated
+# by a vLLM engine instead of the in-process HuggingFace model. The modifier and its
+# module I/O capture always stay on HuggingFace.
+[vllm]
+# Enable the vLLM backend. Requires the vllm package and a GPU.
+enabled = false
+
+# Model to load in vLLM. Empty means the main model. Can point at a separate
+# pre-quantized base (e.g. GPTQ) for faster evaluation.
+model = ""
+
+# How Heretic talks to vLLM. Only "inprocess" is implemented.
+mode = "inprocess"
+
+# Base URL of an OpenAI-compatible vLLM server ("server" mode).
+url = ""
+
+# Tensor dtype for vLLM: "auto", "bfloat16", or a quant method such as "gptq".
+dtype = "auto"
+
+# Number of GPUs for vLLM tensor parallelism.
+tensor_parallel_size = 1
+
+# Fraction of GPU memory vLLM may use.
+gpu_memory_utilization = 0.9
+
+# Maximum sequence length vLLM accepts (0 = derive from the model).
+max_model_len = 0
+
+# Maximum LoRA rank vLLM reserves. Must be at least the modifier's lora_rank.
+max_lora_rank = 64
+
+
 # Dataset of prompts to use for automatically determining the optimal batch size.
 [batch_size_test_prompts]
 dataset = "mlabonne/harmless_alpaca"

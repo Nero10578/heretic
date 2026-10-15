@@ -8,10 +8,12 @@ from optuna.study import StudyDirection
 from pydantic import BaseModel
 
 from .config import DatasetSpecification, ScorerConfig, Settings
+from .inference import HFBackend, InferenceBackend
 from .model import Model
 from .plugin import Context, is_builtin_plugin, load_plugin
 from .scorer import Score, Scorer
 from .utils import parse_study_direction, print
+from .vllm_backend import VLLMBackend
 
 
 @dataclass
@@ -38,11 +40,18 @@ class Evaluator:
 
         print()
         print("Loading and initializing scorers...")
+        self._load_scorers()
+
+        # Which engine serves generation. Shared by scorer init, the baseline, and every
+        # trial, so the baseline and the trial scores always come from the same backend
+        # (which the KL scorer requires for its divergence to be meaningful).
+        self._backend = self._make_backend()
+
         # Share one Context between scorer init (prompt filtering) and baseline
         # computation. Both run on the unmodified base model, so cached responses are
         # valid for both and the same prompt sets aren't generated twice.
-        ctx = Context(settings=self.settings, model=self.model)
-        self._load_and_init_scorers(ctx)
+        ctx = Context(settings=self.settings, model=self.model, backend=self._backend)
+        self._init_scorers(ctx)
 
         print()
         print("Getting baseline scores...")
@@ -50,10 +59,9 @@ class Evaluator:
         for name, score in self.baseline_scores:
             print(f"* Baseline [bold]{name}:[/] [green]{score.rich_display}[/]")
 
-    def _load_and_init_scorers(self, ctx: Context) -> None:
+    def _load_scorers(self) -> None:
         """
-        Load and instantiate all configured scorer plugins,
-        then runs their initialization hooks.
+        Load and instantiate all configured scorer plugins and validate their contract.
         """
         scorer_configs = self.settings.scorers
         if not scorer_configs:
@@ -110,9 +118,38 @@ class Evaluator:
                 ScorerEntry(scorer=scorer, config=config, name=scorer_instance_name)
             )
 
-        # Run scorer init hooks.
+    def _init_scorers(self, ctx: Context) -> None:
+        """Run the init hooks of all loaded scorers."""
         for entry in self._scorer_entries:
             entry.scorer.init(ctx)
+
+    def _make_backend(self) -> InferenceBackend:
+        """
+        Select the generation backend.
+
+        vLLM is used only when it is enabled and every configured scorer is text-only,
+        because a single Context (and its per-prompt generation cache) is shared across
+        all scorers. A scorer that needs model internals keeps the HuggingFace backend.
+        """
+        vllm = getattr(self.settings, "vllm", None)
+        if vllm is None or not vllm.enabled:
+            return HFBackend(self.model)
+
+        blocked = [
+            entry.name
+            for entry in self._scorer_entries
+            if entry.scorer.requires_model_internals
+        ]
+        if blocked:
+            print()
+            print(
+                "vLLM backend is enabled, but these scorers need model internals and "
+                "force the HuggingFace path: " + ", ".join(blocked) + ".",
+                markup=False,
+            )
+            return HFBackend(self.model)
+
+        return VLLMBackend(self.settings, self.model)
 
     def get_dataset_specifications(self) -> list[DatasetSpecification]:
         """
@@ -147,7 +184,10 @@ class Evaluator:
         Returns:
             List of `Score` from each scorer and its name.
         """
-        ctx = Context(settings=self.settings, model=self.model)
+        # Publish the model's current modification to the backend (a no-op for the
+        # HuggingFace backend, which reads the model directly).
+        self._backend.sync_adapter(self.model)
+        ctx = Context(settings=self.settings, model=self.model, backend=self._backend)
         return [
             (entry.name, entry.scorer.get_score(ctx)) for entry in self._scorer_entries
         ]

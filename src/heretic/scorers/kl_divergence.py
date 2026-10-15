@@ -69,6 +69,10 @@ class KLDivergence(Scorer):
         return True
 
     @property
+    def requires_model_internals(self) -> bool:
+        return False
+
+    @property
     def score_name(self) -> str:
         return "KL divergence"
 
@@ -115,9 +119,7 @@ class KLDivergence(Scorer):
         )
 
         print("* Obtaining baseline probability distributions...")
-        baseline_logits = ctx.get_logits(self.prompts, self._after_reasoning)
-
-        self._baseline_logprobs = F.log_softmax(baseline_logits, dim=-1)
+        self._baseline_logprobs = ctx.get_logprobs(self.prompts, self._after_reasoning)
 
         if cache is not None:
             cache.save(
@@ -128,8 +130,7 @@ class KLDivergence(Scorer):
             )
 
     def get_score(self, ctx: Context) -> Score:
-        logits = ctx.get_logits(self.prompts, self._after_reasoning)
-        logprobs = F.log_softmax(logits, dim=-1)
+        logprobs = ctx.get_logprobs(self.prompts, self._after_reasoning)
 
         kl_divergence = F.kl_div(
             logprobs,

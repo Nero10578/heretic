@@ -66,6 +66,10 @@ class KeywordRate(Scorer):
         return True
 
     @property
+    def requires_model_internals(self) -> bool:
+        return False
+
+    @property
     def score_name(self) -> str:
         return self.settings.score_name
 

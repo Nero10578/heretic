@@ -76,6 +76,18 @@ class Scorer(Plugin, ABC):
         """
         return self.__class__.__name__
 
+    @property
+    def requires_model_internals(self) -> bool:
+        """
+        Whether the scorer needs model internals that only the in-process HuggingFace
+        backend exposes (residuals, module I/O, or direct model access).
+
+        Scorers that use only `get_responses` and `get_logprobs` can be served by the
+        vLLM backend and should return False. Defaults to True, so an unknown scorer
+        stays on the HuggingFace path.
+        """
+        return True
+
     def __init__(
         self,
         heretic_settings: HereticSettings,

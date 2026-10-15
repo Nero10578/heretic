@@ -63,6 +63,26 @@ def _hash_json(payload: Any) -> str:
     ).hexdigest()
 
 
+def _vllm_identity(settings: Settings) -> Any:
+    """
+    Identity of the inference backend that produced the cached base-model results.
+
+    Kept in the environment key so a prompt set or baseline produced by one engine (e.g.
+    HuggingFace) is never reused for another (e.g. vLLM loading a different base).
+    """
+    vllm = getattr(settings, "vllm", None)
+    if vllm is None or not vllm.enabled:
+        return "disabled"
+    return {
+        "model": vllm.model or settings.model,
+        "mode": vllm.mode,
+        "url": vllm.url,
+        "dtype": vllm.dtype,
+        "max_logprobs": vllm.max_logprobs,
+        "logprobs_mode": vllm.logprobs_mode,
+    }
+
+
 def environment_key(settings: Settings) -> str:
     """
     Hash of the global settings that determine the base-model initialization results.
@@ -88,6 +108,7 @@ def environment_key(settings: Settings) -> str:
         "chat_template_kwargs": settings.chat_template_kwargs,
         "chain_of_thought_skips": settings.chain_of_thought_skips,
         "response_prefix": settings.response_prefix,
+        "vllm": _vllm_identity(settings),
     }
     return _hash_json(payload)
 

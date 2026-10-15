@@ -6,6 +6,7 @@ import importlib.util
 import inspect
 import sys
 import types
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import (
@@ -20,12 +21,14 @@ from typing import (
 )
 
 import torch
+import torch.nn.functional as F
 from pydantic import BaseModel
 from torch import Tensor
 
 from .cache import InitCache, environment_key, plugin_namespace
 from .config import DatasetSpecification, SingleDatasetSpecification
 from .config import Settings as HereticSettings
+from .inference import HFBackend, InferenceBackend
 from .model import (
     CaptureRequest,
     GenerationRecord,
@@ -171,9 +174,19 @@ class Context:
     Acts as a quasi-API for plugins to access Heretic functionality.
     """
 
-    def __init__(self, settings: HereticSettings, model: Model) -> None:
+    def __init__(
+        self,
+        settings: HereticSettings,
+        model: Model,
+        backend: InferenceBackend | None = None,
+    ) -> None:
         self._model = model
         self._settings = settings
+        # Which engine serves generation. Defaults to the in-process HuggingFace model;
+        # the evaluator injects a shared vLLM backend for pure-inference scoring.
+        self._backend: InferenceBackend = (
+            backend if backend is not None else HFBackend(model)
+        )
         # Per-prompt generation records, keyed by prompt, so that refusal scoring and
         # logit capture share a single generation instead of regenerating the reasoning.
         self._generation_records: dict[tuple[str, str], GenerationRecord] = {}
@@ -203,9 +216,8 @@ class Context:
                 missing.append(prompt)
 
         if missing:
-            records = self._model.get_response_records_batched(
+            records = self._backend.get_generation_records(
                 missing,
-                skip_special_tokens=True,
                 capture=CaptureRequest(
                     logits=self.capture_logits_default,
                     module_io=self.capture_module_io_default,
@@ -272,6 +284,50 @@ class Context:
 
         return self._assemble_logits(captured, capture_ids)
 
+    def get_logprobs(
+        self,
+        prompts: list[Prompt],
+        after_reasoning: bool | None = None,
+    ) -> Tensor:
+        """
+        Log-probabilities at the capture position.
+
+        This is the log-probability counterpart of `get_logits` and the contract KL
+        scorers use, because a backend that returns log-probabilities but not raw logits
+        (e.g. vLLM) can serve it. Logits captured during generation are converted to
+        log-probabilities; rows without a capture are fetched from the backend.
+        """
+        if after_reasoning is None:
+            after_reasoning = self._settings.generate_chain_of_thought
+
+        if after_reasoning:
+            records = self.get_generation_records(prompts)
+            captured = [self._to_logprobs(record.answer_logits) for record in records]
+            capture_ids = [record.capture_ids for record in records]
+        elif self._settings.generate_chain_of_thought:
+            records = self.get_generation_records(prompts)
+            captured = [self._to_logprobs(record.content_logits) for record in records]
+            capture_ids = [record.first_content_ids for record in records]
+        else:
+            return self._backend.get_logprobs_prompt(prompts)
+
+        return self._assemble_logprobs(captured, capture_ids)
+
+    @staticmethod
+    def _to_logprobs(logits: Tensor | None) -> Tensor | None:
+        if logits is None:
+            return None
+        return F.log_softmax(logits, dim=-1)
+
+    def _assemble_logprobs(
+        self,
+        captured: list[Tensor | None],
+        capture_ids: list[list[int]],
+    ) -> Tensor:
+        return self._assemble_rows(
+            captured, capture_ids, self._backend.get_logprobs_from_capture_ids
+        )
+
     def _assemble_logits(
         self,
         captured: list[Tensor | None],
@@ -282,13 +338,28 @@ class Context:
         forward for any prompts that were not captured (e.g. reasoning that never
         closed). When nothing was captured this is exactly the old capture-forward path.
         """
+        return self._assemble_rows(
+            captured, capture_ids, self._model.get_logits_from_capture_ids
+        )
+
+    def _assemble_rows(
+        self,
+        captured: list[Tensor | None],
+        capture_ids: list[list[int]],
+        fetch: Callable[[list[list[int]]], Tensor],
+    ) -> Tensor:
+        """
+        Combine per-prompt rows captured during generation with rows fetched in a
+        separate pass (`fetch`) for prompts that were not captured. When nothing was
+        captured this is exactly the separate-pass path.
+        """
         missing = [index for index, value in enumerate(captured) if value is None]
         if not missing:
             return torch.stack(cast(list[Tensor], captured), dim=0)
 
         fallback = torch.cat(
             [
-                self._model.get_logits_from_capture_ids(batch)
+                fetch(batch)
                 for batch in batchify(
                     [capture_ids[index] for index in missing],
                     self._settings.capture_batch_size,

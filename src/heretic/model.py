@@ -1303,6 +1303,43 @@ class Model:
         """
         return cast(str, self.tokenizer.decode(ids, skip_special_tokens=False))
 
+    def build_chat_prompts(self, prompts: list[Prompt]) -> list[str]:
+        """
+        Render prompts through the chat template. Reused by alternative inference
+        backends so prompt construction stays identical to the HuggingFace path.
+        """
+        return self._build_chat_prompts(prompts)
+
+    def response_max_new_tokens(self) -> int:
+        """
+        Maximum number of tokens a full response generation may produce, including the
+        reasoning phase in reasoning mode.
+        """
+        return self._response_max_new_tokens()
+
+    def answer_and_capture_ids(
+        self,
+        prompt_ids: list[int],
+        generated_ids: list[int],
+    ) -> tuple[list[int], list[int], bool]:
+        """
+        Split generated IDs into answer IDs, the capture position IDs, and an
+        "unfinished" flag. Thin wrapper over the internal helper for backends that locate
+        the capture position themselves.
+        """
+        return self._answer_and_capture_ids(prompt_ids, generated_ids)
+
+    def first_content_ids(
+        self,
+        prompt_ids: list[int],
+        generated_ids: list[int],
+    ) -> list[int]:
+        """
+        Token IDs up to the first content-bearing token, skipping the model's
+        thinking-start marker. Thin wrapper over the internal helper.
+        """
+        return self._first_content_ids(prompt_ids, generated_ids)
+
     def _first_content_ids(
         self, prompt_ids: list[int], generated_ids: list[int]
     ) -> list[int]:

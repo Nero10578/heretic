@@ -190,6 +190,107 @@ class BenchmarkSpecification(BaseModel):
     )
 
 
+class VLLMSettings(BaseModel):
+    """
+    Configuration for the optional vLLM inference backend used for scoring.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "If true, run the pure-inference scorer evaluation through a vLLM engine "
+            "instead of the in-process HuggingFace model. Requires all scorers to be "
+            "text-only (no logits/residuals/module I/O); otherwise the HuggingFace path "
+            "is used with a warning. The modifier and its module I/O capture always stay "
+            "on HuggingFace."
+        ),
+    )
+
+    model: str = Field(
+        default="",
+        description=(
+            "Model to load in vLLM. Defaults to the main model. May point at a separate "
+            "pre-quantized base (e.g. GPTQ); the modifier's LoRA adapter is applied on "
+            "top of whichever base vLLM loads."
+        ),
+    )
+
+    mode: Literal["inprocess", "server"] = Field(
+        default="inprocess",
+        description="How Heretic talks to vLLM. Only 'inprocess' is implemented.",
+    )
+
+    url: str = Field(
+        default="",
+        description="Base URL of a vLLM server (OpenAI-compatible) in 'server' mode.",
+    )
+
+    dtype: str = Field(
+        default="auto",
+        description=(
+            'Tensor dtype for vLLM, e.g. "auto", "bfloat16", or a quant method such as '
+            '"gptq".'
+        ),
+    )
+
+    tensor_parallel_size: PositiveInt = Field(
+        default=1,
+        description="Number of GPUs for vLLM tensor parallelism.",
+    )
+
+    gpu_memory_utilization: float = Field(
+        default=0.9,
+        gt=0.0,
+        le=1.0,
+        description="Fraction of GPU memory vLLM may use.",
+    )
+
+    max_model_len: NonNegativeInt = Field(
+        default=0,
+        description="Maximum sequence length vLLM accepts (0 = derive from the model).",
+    )
+
+    max_lora_rank: PositiveInt = Field(
+        default=64,
+        description=(
+            "Maximum LoRA rank vLLM reserves. Must be at least the modifier's lora_rank."
+        ),
+    )
+
+    max_logprobs: int = Field(
+        default=-1,
+        ge=-1,
+        description=(
+            "Engine cap on requested logprobs. -1 (the default) allows the full-vocabulary "
+            "requests the KL scorer needs."
+        ),
+    )
+
+    logprobs_mode: Literal[
+        "raw_logprobs",
+        "processed_logprobs",
+        "raw_logits",
+        "processed_logits",
+    ] = Field(
+        default="raw_logprobs",
+        description=(
+            "What vLLM returns for logprobs. 'raw_logprobs' is the pre-temperature "
+            "log-softmax, which the KL path expects directly; 'raw_logits' returns raw "
+            "logits and is converted to log-probabilities."
+        ),
+    )
+
+    enforce_eager: bool = Field(
+        default=False,
+        description="Disable CUDA graphs in vLLM (slower, but simpler to debug).",
+    )
+
+    trust_remote_code: bool = Field(
+        default=False,
+        description="Pass trust_remote_code to the vLLM model loader.",
+    )
+
+
 class Settings(BaseSettings):
     model: str = Field(description="Hugging Face model ID, or path to model on disk.")
 
@@ -262,6 +363,11 @@ class Settings(BaseSettings):
     max_memory: dict[str, str] | None = Field(
         default=None,
         description='Maximum memory to allocate per device (e.g., { "0" = "20GB", "cpu" = "64GB" }).',
+    )
+
+    vllm: VLLMSettings = Field(
+        default_factory=VLLMSettings,
+        description="Optional vLLM inference backend for the scoring path (see [vllm]).",
     )
 
     attn_implementation: Literal[
