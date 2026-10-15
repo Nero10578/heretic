@@ -28,6 +28,7 @@ from torch import Tensor
 
 from .config import Settings
 from .model import CaptureRequest, GenerationRecord, Model
+from .system import empty_cache
 from .utils import Prompt, print
 
 
@@ -124,9 +125,16 @@ class VLLMBackend:
         self._paused = True
 
     def resume(self) -> None:
-        """Wake a paused engine. No-op when it was not paused."""
+        """
+        Wake a paused engine. No-op when it was not paused.
+
+        The modifier's scratch tensors are still held by PyTorch's caching allocator at
+        this point, so release them first; otherwise re-mapping the engine's weights can
+        run out of memory on a tight GPU.
+        """
         if not self._paused or self._engine is None:
             return
+        empty_cache()
         self._engine.wake_up()
         self._paused = False
 

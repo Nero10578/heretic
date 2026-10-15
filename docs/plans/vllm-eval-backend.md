@@ -391,6 +391,10 @@ GPU hosts.
   path, inside `try`/`finally` so the engine is always woken. The scoring engine releases
   the GPUs for the modifier and returns for scoring, so the two no longer have to fit
   together. `InferenceBackend.pause`/`resume` are no-ops on the HuggingFace backend.
+  Two companion fixes for tight GPUs: `resume()` calls `empty_cache()` before `wake_up()`
+  (the modifier's scratch tensors otherwise block the weight remap and wake-up OOMs), and
+  ARA keeps its module-I/O caches in host memory (`move_module_io`) instead of pinning GPU
+  memory between trials.
 - **Outstanding.** Phase 4 (docs), tensor parallel / server mode, adapter lifecycle at
   scale, and GPU validation of the engine, adapter hot-swap, editor parking, and sleep
   mode (risks 3 and 4 in section 9).

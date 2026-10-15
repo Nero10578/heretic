@@ -23,6 +23,7 @@ from torch import Tensor
 from torch.optim import LBFGS
 
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
+from heretic.model import ModuleIO
 from heretic.modifier import Context, Modifier, Serializable
 from heretic.utils import REFUSAL_MARKERS, format_dataset_specification, print
 
@@ -190,6 +191,26 @@ def ara_loss(
     )
 
 
+def move_module_io(module_io: ModuleIO, device: torch.device) -> ModuleIO:
+    """
+    Recursively move a captured module I/O structure to `device`.
+
+    The per-trial optimization stages only the rows it needs onto an accelerator itself,
+    so the full caches are kept in host memory rather than pinning GPU memory between
+    trials.
+    """
+    return [
+        {
+            component: {
+                index: (input.to(device), output.to(device))
+                for index, (input, output) in modules.items()
+            }
+            for component, modules in layer.items()
+        }
+        for layer in module_io
+    ]
+
+
 class ARA(Modifier[Parameters]):
     settings: Settings
 
@@ -252,11 +273,17 @@ class ARA(Modifier[Parameters]):
 
         print()
         print("Obtaining module I/O for good prompts...")
-        self.good_module_io = ctx.get_module_io(good_prompts)
+        self.good_module_io = move_module_io(
+            ctx.get_module_io(good_prompts),
+            torch.device("cpu"),
+        )
 
         print()
         print("Obtaining module I/O for bad prompts...")
-        self.bad_module_io = ctx.get_module_io(bad_prompts)
+        self.bad_module_io = move_module_io(
+            ctx.get_module_io(bad_prompts),
+            torch.device("cpu"),
+        )
 
         if cache is not None:
             cache.save(
