@@ -332,7 +332,9 @@ class InitCache:
             decide = self._ask_for_alternative(label)
 
         index = decide(alternatives)
-        if index is None or not 0 <= index < len(alternatives):
+        # `decide` may return a non-integer (e.g. a questionary title) or a stale index;
+        # treat anything outside the candidate range as a decline.
+        if not isinstance(index, int) or not 0 <= index < len(alternatives):
             return None
         return _load_cache_file(alternatives[index][1])
 
@@ -378,11 +380,15 @@ class InitCache:
                 for index, (environment, path, _) in enumerate(alternatives)
             ]
             choices.append(
-                questionary.Choice(title="Do not reuse any cached entry", value=None)
+                # A non-None value is required: questionary falls back to the choice's
+                # title when value is None, which would return a string instead of a
+                # decline sentinel.
+                questionary.Choice(title="Do not reuse any cached entry", value=-1)
             )
-            return cast(
+            index = cast(
                 int | None,
                 questionary.select("Which cached entry?", choices=choices).ask(),
             )
+            return index
 
         return ask

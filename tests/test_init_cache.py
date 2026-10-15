@@ -188,6 +188,13 @@ class FallbackCacheTests(unittest.TestCase):
             current = InitCache(directory, "current", "ns")
             self.assertIsNone(current.load_with_fallback("X", decide=lambda alts: 0))
 
+    def test_load_with_fallback_rejects_out_of_range_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            InitCache(directory, "old", "ns").save({"value": 1})
+            current = InitCache(directory, "current", "ns")
+            self.assertIsNone(current.load_with_fallback("X", decide=lambda alts: -1))
+            self.assertIsNone(current.load_with_fallback("X", decide=lambda alts: 5))
+
     def test_exact_hit_does_not_consult_decide(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             current = InitCache(directory, "current", "ns")
