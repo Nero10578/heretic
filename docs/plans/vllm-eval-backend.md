@@ -373,6 +373,12 @@ GPU hosts.
   tests, `ruff` and `ty` clean.
 - **Selector.** vLLM is used when enabled and no configured scorer requires model internals
   (`BenchmarkScore` does, and stays on HuggingFace).
+- **Resume with a backend swap.** On "continue", the `[vllm]` settings are taken from the
+  current configuration (overlaid on the saved run) rather than the checkpoint, with a
+  notice when they differ. Modifier init caches no longer include the backend identity
+  (`Plugin.backend_dependent_init = False`; `Scorer` overrides it to True), so changing
+  the vLLM model reuses ARA's module-I/O capture and only recomputes the scorer baselines.
+  Trials scored before and after the swap are not directly comparable.
 - **Outstanding.** Phase 4 (docs), tensor parallel / server mode, adapter lifecycle at
   scale, and GPU validation of the engine, adapter hot-swap, and editor parking (risks 3
   and 4 in section 9).

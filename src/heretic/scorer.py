@@ -88,6 +88,14 @@ class Scorer(Plugin, ABC):
         """
         return True
 
+    @property
+    def backend_dependent_init(self) -> bool:
+        """
+        Scorer initialization (filtered prompt sets, KL baselines) is produced by the
+        scoring backend, so it must be re-computed when the backend changes.
+        """
+        return True
+
     def __init__(
         self,
         heretic_settings: HereticSettings,

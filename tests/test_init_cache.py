@@ -10,6 +10,7 @@ import torch
 
 from heretic.cache import InitCache, environment_key, plugin_namespace, source_hash
 from heretic.config import Settings as HereticSettings
+from heretic.config import VLLMSettings
 from heretic.modifiers.ara import ARA
 from heretic.modifiers.ara import Settings as ARASettings
 from heretic.plugin import Context
@@ -79,6 +80,24 @@ class CacheKeyTests(unittest.TestCase):
         )
         self.assertNotEqual(environment_key(base), environment_key(changed))
 
+    def test_backend_identity_is_optional_in_environment_key(self) -> None:
+        saved = HereticSettings.model_construct(
+            model="m",
+            vllm=VLLMSettings(enabled=True, model="saved"),
+        )
+        current = HereticSettings.model_construct(
+            model="m",
+            vllm=VLLMSettings(enabled=True, model="current"),
+        )
+
+        # Scorers' keys track the scoring backend...
+        self.assertNotEqual(environment_key(saved), environment_key(current))
+        # ...while modifiers' keys ignore it.
+        self.assertEqual(
+            environment_key(saved, include_backend=False),
+            environment_key(current, include_backend=False),
+        )
+
     def test_plugin_namespace_depends_on_settings(self) -> None:
         first = plugin_namespace("KeywordRate", Settings(print_responses=False))
         self.assertEqual(
@@ -120,6 +139,24 @@ class PluginCacheTests(unittest.TestCase):
         self.assertEqual(cache.directory, Path("some/dir"))
         self.assertEqual(cache.path.parent.parent, Path("some/dir"))
         self.assertEqual(cache.path.parent.name, environment_key(settings))
+
+    def test_modifier_cache_key_ignores_backend(self) -> None:
+        settings = HereticSettings.model_construct(
+            model="m",
+            init_cache=True,
+            init_cache_dir="some/dir",
+            vllm=VLLMSettings(enabled=True, model="saved"),
+        )
+        modifier = ARA(
+            heretic_settings=settings,
+            settings=ARASettings(),
+        )
+        cache = modifier.init_cache()
+        assert cache is not None
+        self.assertEqual(
+            cache.path.parent.name,
+            environment_key(settings, include_backend=False),
+        )
 
 
 class _FakeModelShim:

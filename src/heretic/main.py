@@ -400,9 +400,26 @@ def run():
             return
 
         if action == "continue":
-            settings = Settings.model_validate_json(
+            restored = Settings.model_validate_json(
                 existing_study.user_attrs["settings"]
             )
+            # The vLLM backend is an evaluation detail rather than a study parameter, so
+            # take it from the current configuration even when resuming. This lets you
+            # swap in a different (e.g. faster) vLLM model without discarding the study.
+            if restored.vllm != settings.vllm:
+                print()
+                print(
+                    "The vLLM backend settings differ from the saved run. Using the "
+                    "current configuration:"
+                )
+                print(f"* Saved model:   {restored.vllm.model or restored.model}")
+                print(f"* Current model: {settings.vllm.model or settings.model}")
+                print(
+                    "[yellow]Note: trials scored with different vLLM models are not "
+                    "directly comparable.[/]"
+                )
+            restored.vllm = settings.vllm
+            settings = restored
         elif action == "restart":
             os.unlink(study_checkpoint_file)
             backend = JournalFileBackend(study_checkpoint_file, lock_obj=lock_obj)

@@ -83,11 +83,16 @@ def _vllm_identity(settings: Settings) -> Any:
     }
 
 
-def environment_key(settings: Settings) -> str:
+def environment_key(settings: Settings, include_backend: bool = True) -> str:
     """
     Hash of the global settings that determine the base-model initialization results.
     Deliberately excludes settings that do not affect initialization (such as n_trials)
     so that continuing a run with a different trial count does not invalidate the cache.
+
+    `include_backend` controls whether the scoring backend identity is part of the key.
+    Scorer results (filtered prompt sets, baselines) are produced by the scoring backend,
+    so they include it; modifier results (module I/O) are produced on HuggingFace
+    regardless of the backend, so they exclude it and survive a backend change.
     """
     payload = {
         "cache_format_version": CACHE_FORMAT_VERSION,
@@ -108,8 +113,9 @@ def environment_key(settings: Settings) -> str:
         "chat_template_kwargs": settings.chat_template_kwargs,
         "chain_of_thought_skips": settings.chain_of_thought_skips,
         "response_prefix": settings.response_prefix,
-        "vllm": _vllm_identity(settings),
     }
+    if include_backend:
+        payload["vllm"] = _vllm_identity(settings)
     return _hash_json(payload)
 
 

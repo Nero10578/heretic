@@ -634,9 +634,23 @@ class Plugin:
             return None
         return InitCache(
             directory=self.heretic_settings.init_cache_dir,
-            environment=environment_key(self.heretic_settings),
+            environment=environment_key(
+                self.heretic_settings,
+                include_backend=self.backend_dependent_init,
+            ),
             namespace=plugin_namespace(self.__class__.__name__, self.settings),
         )
+
+    @property
+    def backend_dependent_init(self) -> bool:
+        """
+        Whether this plugin's cached initialization results depend on the scoring backend.
+
+        Defaults to False because modifiers compute their initialization on HuggingFace
+        regardless of the backend. Scorers, whose filtered prompt sets and baselines are
+        produced by the scoring backend, override this to True.
+        """
+        return False
 
     def init(self, ctx: Context) -> None:
         """
