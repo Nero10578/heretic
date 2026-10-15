@@ -471,14 +471,23 @@ class ARA(Modifier[Parameters]):
         Device on which a per-module optimization runs.
 
         Uses the storage device when it is already an accelerator, so the default
-        (GPU-resident model) path is unchanged, and otherwise falls back to CUDA so a
-        parked, host-memory model still gets accelerated optimization.
+        (GPU-resident model) path is unchanged. For a parked, host-memory model it picks
+        the GPU with the most free memory, since a co-resident engine (e.g. a
+        tensor-parallel vLLM) may leave devices unevenly filled.
         """
         if storage_device.type != "cpu":
             return storage_device
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        return storage_device
+        if not torch.cuda.is_available():
+            return storage_device
+
+        best_index = 0
+        best_free = -1
+        for index in range(torch.cuda.device_count()):
+            free, _ = torch.cuda.mem_get_info(index)
+            if free > best_free:
+                best_free = free
+                best_index = index
+        return torch.device("cuda", best_index)
 
     def reset_model(self, ctx: Context) -> None:
         model = ctx.get_model()
