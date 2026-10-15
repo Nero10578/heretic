@@ -313,6 +313,17 @@ class VLLMSettings(BaseModel):
         ),
     )
 
+    sleep_for_modifier: bool = Field(
+        default=False,
+        description=(
+            "If true, put the vLLM engine to sleep (offloading its weights to CPU memory "
+            "and discarding the KV cache) while the modifier runs each trial, so the "
+            "modifier has the GPU to itself, then wake it for scoring. Needed when the "
+            "scoring engine and the modifier do not both fit in VRAM. Requires enough "
+            "host RAM to hold the engine's weights, and enables vLLM's sleep mode."
+        ),
+    )
+
 
 class Settings(BaseSettings):
     model: str = Field(description="Hugging Face model ID, or path to model on disk.")

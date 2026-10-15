@@ -78,6 +78,7 @@ def engine_kwargs(settings: Settings) -> dict[str, Any]:
         "logprobs_mode": vllm.logprobs_mode,
         "enforce_eager": vllm.enforce_eager,
         "trust_remote_code": vllm.trust_remote_code,
+        "enable_sleep_mode": vllm.sleep_for_modifier,
     }
     kwargs.update(vllm.extra_engine_args)
     return kwargs
@@ -96,6 +97,7 @@ class VLLMBackend:
         self._vllm = settings.vllm
         self._model = model
         self._engine: Any = None
+        self._paused = False
         self._vocab_size: int | None = None
         self._adapter_dir = Path(tempfile.mkdtemp(prefix="heretic-vllm-adapters-"))
         self._adapter_request: Any = None
@@ -106,7 +108,27 @@ class VLLMBackend:
         """Release the engine and remove exported adapter files."""
         self._engine = None
         self._adapter_request = None
+        self._paused = False
         shutil.rmtree(self._adapter_dir, ignore_errors=True)
+
+    def pause(self) -> None:
+        """
+        Release the engine's GPU memory so the modifier can use the GPU.
+
+        Uses vLLM sleep level 1 (offload weights to CPU, discard the KV cache). No-op
+        unless `sleep_for_modifier` is enabled and the engine has been created.
+        """
+        if self._paused or self._engine is None or not self._vllm.sleep_for_modifier:
+            return
+        self._engine.sleep(level=1)
+        self._paused = True
+
+    def resume(self) -> None:
+        """Wake a paused engine. No-op when it was not paused."""
+        if not self._paused or self._engine is None:
+            return
+        self._engine.wake_up()
+        self._paused = False
 
     def sync_adapter(self, model: Model) -> None:
         """

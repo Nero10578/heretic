@@ -385,9 +385,15 @@ GPU hosts.
   against a code edit or a settings change silently costing hours of re-initialization.
   Environment payloads are now recorded as `_environment.json` sidecars so a mismatch can
   be explained (`environment_payload`/`environment_key` split in `cache.py`).
+- **Sleep mode for tight VRAM.** `[vllm] sleep_for_modifier` enables vLLM's sleep mode
+  (`enable_sleep_mode` in `engine_kwargs`) and wraps each per-trial modification with
+  `pause()`/`resume()` (`sleep(level=1)` / `wake_up`) in the trial loop and the export
+  path, inside `try`/`finally` so the engine is always woken. The scoring engine releases
+  the GPUs for the modifier and returns for scoring, so the two no longer have to fit
+  together. `InferenceBackend.pause`/`resume` are no-ops on the HuggingFace backend.
 - **Outstanding.** Phase 4 (docs), tensor parallel / server mode, adapter lifecycle at
-  scale, and GPU validation of the engine, adapter hot-swap, and editor parking (risks 3
-  and 4 in section 9).
+  scale, and GPU validation of the engine, adapter hot-swap, editor parking, and sleep
+  mode (risks 3 and 4 in section 9).
 
 ## 14. Editor parking (single-GPU serialization)
 

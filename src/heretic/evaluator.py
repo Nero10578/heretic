@@ -175,6 +175,17 @@ class Evaluator:
 
         return VLLMBackend(self.settings, self.model)
 
+    def pause_backend(self) -> None:
+        """
+        Release the scoring engine's GPU memory so the modifier can use the GPU during a
+        trial. A no-op for backends that hold no GPU memory (the HuggingFace backend).
+        """
+        self._backend.pause()
+
+    def resume_backend(self) -> None:
+        """Restore the scoring engine after the modifier has run."""
+        self._backend.resume()
+
     def get_dataset_specifications(self) -> list[DatasetSpecification]:
         """
         Collect the dataset specifications declared in the settings of all

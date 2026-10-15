@@ -51,6 +51,17 @@ class InferenceBackend(Protocol):
         """
         ...
 
+    def pause(self) -> None:
+        """
+        Release GPU memory the backend holds, so the modifier can use the GPU during the
+        per-trial modification. No-op for backends that hold no GPU memory.
+        """
+        ...
+
+    def resume(self) -> None:
+        """Restore the backend after the modifier has run. Inverse of `pause`."""
+        ...
+
 
 class HFBackend:
     """Default backend: generate with the in-process HuggingFace model."""
@@ -77,3 +88,9 @@ class HFBackend:
     def get_logprobs_from_capture_ids(self, capture_ids: list[list[int]]) -> Tensor:
         logits = self._model.get_logits_from_capture_ids(capture_ids)
         return F.log_softmax(logits, dim=-1)
+
+    def pause(self) -> None:
+        return
+
+    def resume(self) -> None:
+        return

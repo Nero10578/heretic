@@ -67,9 +67,17 @@ class FakeBackend:
         self.logprob_capture_calls: list[list[list[int]]] = []
         self.answer_logits: torch.Tensor | None = None
         self.synced = 0
+        self.pauses = 0
+        self.resumes = 0
 
     def sync_adapter(self, model: Model) -> None:
         self.synced += 1
+
+    def pause(self) -> None:
+        self.pauses += 1
+
+    def resume(self) -> None:
+        self.resumes += 1
 
     def get_generation_records(
         self, prompts: list[Prompt], *, capture: CaptureRequest
@@ -233,12 +241,26 @@ class AdapterSyncTests(unittest.TestCase):
         finally:
             backend.close()
 
+    def test_pause_and_resume_are_noops_without_engine(self) -> None:
+        settings = cast(
+            HereticSettings,
+            SimpleNamespace(model="m", vllm=VLLMSettings(sleep_for_modifier=True)),
+        )
+        backend = VLLMBackend(settings, cast(Model, SimpleNamespace(model=object())))
+        try:
+            # No engine has been created, so neither call may raise or touch vLLM.
+            backend.pause()
+            backend.resume()
+        finally:
+            backend.close()
+
 
 class VLLMSettingsTests(unittest.TestCase):
     def test_defaults(self) -> None:
         settings = VLLMSettings()
         self.assertFalse(settings.enabled)
         self.assertFalse(settings.park_editor)
+        self.assertFalse(settings.sleep_for_modifier)
         self.assertEqual(settings.mode, "inprocess")
         self.assertEqual(settings.max_lora_rank, 64)
         self.assertEqual(settings.max_logprobs, -1)
@@ -257,6 +279,7 @@ class EngineKwargsTests(unittest.TestCase):
                 vllm=VLLMSettings(
                     model="tester",
                     max_lora_rank=128,
+                    sleep_for_modifier=True,
                     extra_engine_args={
                         "language_model_only": True,
                         "max_lora_rank": 256,
@@ -269,6 +292,7 @@ class EngineKwargsTests(unittest.TestCase):
 
         self.assertEqual(kwargs["model"], "tester")
         self.assertTrue(kwargs["enable_lora"])
+        self.assertTrue(kwargs["enable_sleep_mode"])
         self.assertTrue(kwargs["language_model_only"])
         # Extras win over the dedicated settings.
         self.assertEqual(kwargs["max_lora_rank"], 256)

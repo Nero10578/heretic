@@ -659,8 +659,13 @@ def run():
             print(f"  * {name} = [bold]{value}[/]")
         print("* Resetting model...")
         modifier.reset_model(ctx)
-        print(f"* Modifying model using {modifier_name}...")
-        modifier.modify_model(ctx, parameters)
+        # Free the scoring engine's GPU memory for the modifier, then restore it.
+        evaluator.pause_backend()
+        try:
+            print(f"* Modifying model using {modifier_name}...")
+            modifier.modify_model(ctx, parameters)
+        finally:
+            evaluator.resume_backend()
         print("* Evaluating...")
         scores = evaluator.get_scores()
         objective_values = evaluator.get_objective_values(scores)
@@ -902,11 +907,15 @@ def run():
                 ctx = Context(settings=settings, model=model)
                 print("* Resetting model...")
                 modifier.reset_model(ctx)
-                print(f"* Modifying model using {modifier_name}...")
-                parameters = modifier.parameters_class.from_dict(
-                    trial.user_attrs["parameters"]
-                )
-                modifier.modify_model(ctx, parameters)
+                evaluator.pause_backend()
+                try:
+                    print(f"* Modifying model using {modifier_name}...")
+                    parameters = modifier.parameters_class.from_dict(
+                        trial.user_attrs["parameters"]
+                    )
+                    modifier.modify_model(ctx, parameters)
+                finally:
+                    evaluator.resume_backend()
 
             reset_trial_model()
 
