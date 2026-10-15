@@ -58,6 +58,31 @@ def normalize_adapter_target_modules(config_path: Path) -> None:
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
+def engine_kwargs(settings: Settings) -> dict[str, Any]:
+    """
+    Keyword arguments for constructing the vLLM engine from the `[vllm]` settings.
+
+    `vllm.extra_engine_args` is merged last, so it can add options Heretic does not expose
+    (e.g. `language_model_only` for multimodal models) or override the ones above.
+    """
+    vllm = settings.vllm
+    kwargs: dict[str, Any] = {
+        "model": vllm.model or settings.model,
+        "dtype": vllm.dtype,
+        "tensor_parallel_size": vllm.tensor_parallel_size,
+        "gpu_memory_utilization": vllm.gpu_memory_utilization,
+        "max_model_len": vllm.max_model_len or None,
+        "enable_lora": True,
+        "max_lora_rank": vllm.max_lora_rank,
+        "max_logprobs": vllm.max_logprobs,
+        "logprobs_mode": vllm.logprobs_mode,
+        "enforce_eager": vllm.enforce_eager,
+        "trust_remote_code": vllm.trust_remote_code,
+    }
+    kwargs.update(vllm.extra_engine_args)
+    return kwargs
+
+
 class VLLMBackend:
     """
     Inference backend that serves scorer generation from a vLLM engine.
@@ -225,17 +250,5 @@ class VLLMBackend:
         model = self._vllm.model or self._settings.model
         print(f"Loading vLLM engine for [bold]{model}[/]...")
 
-        self._engine = LLM(
-            model=model,
-            dtype=self._vllm.dtype,
-            tensor_parallel_size=self._vllm.tensor_parallel_size,
-            gpu_memory_utilization=self._vllm.gpu_memory_utilization,
-            max_model_len=self._vllm.max_model_len or None,
-            enable_lora=True,
-            max_lora_rank=self._vllm.max_lora_rank,
-            max_logprobs=self._vllm.max_logprobs,
-            logprobs_mode=self._vllm.logprobs_mode,
-            enforce_eager=self._vllm.enforce_eager,
-            trust_remote_code=self._vllm.trust_remote_code,
-        )
+        self._engine = LLM(**engine_kwargs(self._settings))
         return self._engine

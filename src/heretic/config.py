@@ -303,6 +303,16 @@ class VLLMSettings(BaseModel):
         description="Pass trust_remote_code to the vLLM model loader.",
     )
 
+    extra_engine_args: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Extra keyword arguments passed straight through to the vLLM engine "
+            "(EngineArgs fields), for options Heretic does not expose. For example "
+            '{"language_model_only" = true} skips the vision tower of a multimodal '
+            "model to save VRAM. These override the settings above on conflict."
+        ),
+    )
+
 
 class Settings(BaseSettings):
     model: str = Field(description="Hugging Face model ID, or path to model on disk.")

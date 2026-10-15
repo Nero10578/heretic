@@ -20,6 +20,7 @@ from heretic.scorers.kl_divergence import KLDivergence
 from heretic.utils import Prompt
 from heretic.vllm_backend import (
     VLLMBackend,
+    engine_kwargs,
     normalize_adapter_target_modules,
     target_module_suffixes,
 )
@@ -245,6 +246,32 @@ class VLLMSettingsTests(unittest.TestCase):
 
     def test_settings_exposes_vllm_table(self) -> None:
         self.assertIn("vllm", HereticSettings.model_fields)
+
+
+class EngineKwargsTests(unittest.TestCase):
+    def test_extras_are_passed_through_and_override(self) -> None:
+        settings = cast(
+            HereticSettings,
+            SimpleNamespace(
+                model="main",
+                vllm=VLLMSettings(
+                    model="tester",
+                    max_lora_rank=128,
+                    extra_engine_args={
+                        "language_model_only": True,
+                        "max_lora_rank": 256,
+                    },
+                ),
+            ),
+        )
+
+        kwargs = engine_kwargs(settings)
+
+        self.assertEqual(kwargs["model"], "tester")
+        self.assertTrue(kwargs["enable_lora"])
+        self.assertTrue(kwargs["language_model_only"])
+        # Extras win over the dedicated settings.
+        self.assertEqual(kwargs["max_lora_rank"], 256)
 
 
 class InternalsTests(unittest.TestCase):

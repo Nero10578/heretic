@@ -104,6 +104,12 @@ gpu_memory_utilization = 0.9     # lower this if the ARA staging step OOMs durin
 max_model_len = 8192             # 0 = derive from the model; must fit prompt + max tokens
 max_lora_rank = 128              # must be >= modifier.ARA.lora_rank
 
+# Extra keyword arguments passed straight through to the vLLM engine (EngineArgs fields),
+# for options Heretic does not expose. Override the settings above on conflict.
+# language_model_only skips the vision tower of a multimodal model to save VRAM.
+[vllm.extra_engine_args]
+language_model_only = true
+
 [scorer.KeywordRate]
 filter_prompts = "keep_refused"
 

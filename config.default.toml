@@ -217,6 +217,12 @@ max_model_len = 0
 # Maximum LoRA rank vLLM reserves. Must be at least the modifier's lora_rank.
 max_lora_rank = 64
 
+# Extra keyword arguments passed straight through to the vLLM engine (EngineArgs fields),
+# for options this file does not expose. These override the settings above on conflict.
+# Example: skip the vision tower of a multimodal model to save VRAM.
+[vllm.extra_engine_args]
+# language_model_only = true
+
 
 # Dataset of prompts to use for automatically determining the optimal batch size.
 [batch_size_test_prompts]
