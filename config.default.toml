@@ -190,6 +190,12 @@ enabled = false
 # pre-quantized base (e.g. GPTQ) for faster evaluation.
 model = ""
 
+# Move the HuggingFace model to CPU memory after its one-time initialization, so the
+# vLLM engine owns the GPU alone. The modifier stages the weight matrices it needs back
+# onto the GPU per trial. Lets a bfloat16 editor and a quantized vLLM copy share a
+# single smaller GPU, at the cost of host RAM and per-trial PCIe traffic.
+park_editor = false
+
 # How Heretic talks to vLLM. Only "inprocess" is implemented.
 mode = "inprocess"
 

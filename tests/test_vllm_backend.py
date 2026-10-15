@@ -237,6 +237,7 @@ class VLLMSettingsTests(unittest.TestCase):
     def test_defaults(self) -> None:
         settings = VLLMSettings()
         self.assertFalse(settings.enabled)
+        self.assertFalse(settings.park_editor)
         self.assertEqual(settings.mode, "inprocess")
         self.assertEqual(settings.max_lora_rank, 64)
         self.assertEqual(settings.max_logprobs, -1)

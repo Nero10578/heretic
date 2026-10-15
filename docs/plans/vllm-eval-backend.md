@@ -373,6 +373,33 @@ GPU hosts.
   tests, `ruff` and `ty` clean.
 - **Selector.** vLLM is used when enabled and no configured scorer requires model internals
   (`BenchmarkScore` does, and stays on HuggingFace).
-- **Outstanding.** Phase 3 (tensor parallel / server mode / adapter lifecycle at scale),
-  Phase 4 (docs), and GPU validation of the engine and adapter hot-swap (risks 3 and 4 in
-  section 9).
+- **Outstanding.** Phase 4 (docs), tensor parallel / server mode, adapter lifecycle at
+  scale, and GPU validation of the engine, adapter hot-swap, and editor parking (risks 3
+  and 4 in section 9).
+
+## 14. Editor parking (single-GPU serialization)
+
+Goal: let a full-precision HuggingFace editor and a quantized vLLM tester share one GPU,
+without ever reloading either engine.
+
+- **Config**: `[vllm] park_editor = false`. Active when true and vLLM is enabled.
+- **Startup order**: the modifier is initialized first (its one-time ARA module-I/O capture
+  needs the GPU), then `Model.park()` moves every editor parameter and buffer to CPU
+  memory, and only then does the evaluator's generating init run and create the vLLM
+  engine on the now-free GPU. Implemented via `Evaluator(defer_init=...)` /
+  `Evaluator.initialize()` and the gated branch in `main.py`.
+- **Per-trial**: the editor stays parked; ARA's `_modify_model` stages each module's LoRA
+  parameters, base weight, and cached prompt I/O onto an accelerator for the optimization
+  and moves the optimized parameters back to their storage device afterwards
+  (`ARA._compute_device`). The default GPU-resident path is unchanged because staging onto
+  the already-current device is a no-op.
+- **vLLM**: loads once and owns the GPU for the rest of the run; never reloaded per trial.
+
+Limitations, to validate on a GPU:
+- Only unquantized HuggingFace editors: the bitsandbytes dequantization path is not staged
+  onto the compute device, so a parked 4-bit editor is unsupported (the bf16 editor is the
+  intended case).
+- `Model.park()` moves parameters individually and does not reconcile Accelerate's dispatch
+  hooks; the editor must not run a forward while parked (nothing does in this flow).
+- Requires host RAM to hold the editor (~62 GB for a 31B bf16 model).
+- GPU validation of the staging and the startup reorder is still outstanding.

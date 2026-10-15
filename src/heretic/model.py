@@ -795,6 +795,21 @@ class Model:
 
         return False
 
+    def park(self) -> None:
+        """
+        Move all model parameters and buffers to CPU memory to free GPU memory.
+
+        Used to hand the GPU to another engine (e.g. vLLM) after the model's one-time
+        initialization. The model is not usable for forwards while parked; callers stage
+        the individual tensors they need back onto an accelerator themselves.
+        """
+        empty_cache()
+        for parameter in self.model.parameters():
+            parameter.data = parameter.data.to("cpu")
+        for buffer in self.model.buffers():
+            buffer.data = buffer.data.to("cpu")
+        empty_cache()
+
     def get_layers(self) -> ModuleList:
         model = self.model
 

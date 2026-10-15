@@ -215,6 +215,19 @@ class VLLMSettings(BaseModel):
         ),
     )
 
+    park_editor: bool = Field(
+        default=False,
+        description=(
+            "If true, move the HuggingFace model to CPU memory once its one-time "
+            "initialization (the ARA module I/O capture) is done, so the vLLM engine "
+            "owns the GPU on its own. The modifier stages the few weight matrices it "
+            "needs back onto the GPU per trial. Lets a bfloat16 editor and a quantized "
+            "vLLM copy share a single smaller GPU, at the cost of host RAM for the "
+            "editor and PCIe traffic during each trial. Requires the vLLM backend to be "
+            "enabled, and only supports unquantized HuggingFace models."
+        ),
+    )
+
     mode: Literal["inprocess", "server"] = Field(
         default="inprocess",
         description="How Heretic talks to vLLM. Only 'inprocess' is implemented.",

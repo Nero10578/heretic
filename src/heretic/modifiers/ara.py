@@ -350,18 +350,37 @@ class ARA(Modifier[Parameters]):
                     # Cast to Linear to access weights and LoRA adapters.
                     module = cast(Linear, module)
 
+                    # We optimize the LoRA weights A and B.
+                    lora_A = cast(Tensor, module.lora_A["default"].weight)
+                    lora_B = cast(Tensor, module.lora_B["default"].weight)
+
+                    # The model can be parked in host memory (see Model.park) to leave the
+                    # GPU to another engine, so run the optimization on an accelerator
+                    # regardless by staging the LoRA parameters onto the compute device
+                    # and moving the optimized parameters back afterwards.
+                    storage_device = lora_A.device
+                    compute_device = self._compute_device(storage_device)
+                    lora_A.data = lora_A.data.to(compute_device)
+                    lora_B.data = lora_B.data.to(compute_device)
+
                     # We need the base weight in float32 to compute the effective weight.
                     base_weight = cast(Tensor, module.base_layer.weight)
                     quant_state = getattr(base_weight, "quant_state", None)
 
                     if quant_state is None:
-                        W_base = base_weight.to(torch.float32)
+                        W_base = base_weight.to(
+                            device=compute_device,
+                            dtype=torch.float32,
+                        )
                     else:
                         # Use the original dequantization logic from bitsandbytes.
                         W_base = BNB_F.dequantize_4bit(
                             base_weight.data,
                             quant_state,
-                        ).to(torch.float32)
+                        ).to(
+                            device=compute_device,
+                            dtype=torch.float32,
+                        )
 
                     # Pre-calculate the original row norms to preserve them.
                     # See https://huggingface.co/blog/grimjim/norm-preserving-biprojected-abliteration
@@ -369,10 +388,6 @@ class ARA(Modifier[Parameters]):
                         Tensor,
                         LA.vector_norm(W_base, dim=1, keepdim=True).detach(),
                     )
-
-                    # We optimize the LoRA weights A and B.
-                    lora_A = cast(Tensor, module.lora_A["default"].weight)
-                    lora_B = cast(Tensor, module.lora_B["default"].weight)
 
                     # Initialize A the same way PEFT does, but deterministically. See
                     # https://github.com/huggingface/peft/blob/v0.21.2/src/peft/tuners/lora/layer.py#L338
@@ -440,11 +455,30 @@ class ARA(Modifier[Parameters]):
                                 f"\\[{layer_index}/{component}/{module_index}] Step: {step + 1}, Loss: {loss.item():.6f}"
                             )
 
+                    # Move the optimized parameters back to their storage device.
+                    if compute_device != storage_device:
+                        lora_A.data = lora_A.data.to(storage_device)
+                        lora_B.data = lora_B.data.to(storage_device)
+
                     # Free the gradient buffers accumulated during optimization.
                     # Without this, they persist on the model (one full-size gradient
                     # per processed weight) and can easily consume tens of GB of VRAM,
                     # causing out-of-memory errors during the subsequent evaluation.
                     optimizer.zero_grad(set_to_none=True)
+
+    def _compute_device(self, storage_device: torch.device) -> torch.device:
+        """
+        Device on which a per-module optimization runs.
+
+        Uses the storage device when it is already an accelerator, so the default
+        (GPU-resident model) path is unchanged, and otherwise falls back to CUDA so a
+        parked, host-memory model still gets accelerated optimization.
+        """
+        if storage_device.type != "cpu":
+            return storage_device
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        return storage_device
 
     def reset_model(self, ctx: Context) -> None:
         model = ctx.get_model()

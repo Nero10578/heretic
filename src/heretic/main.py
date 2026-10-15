@@ -570,13 +570,19 @@ def run():
                     f"* Extended prefix found: [bold]{escape(repr(settings.response_prefix))}[/]"
                 )
 
-    evaluator = Evaluator(settings, model)
+    # When the vLLM backend is enabled with editor parking, the HuggingFace model is
+    # initialized first (ARA's module I/O capture needs the GPU), parked to CPU memory,
+    # and only then is the vLLM engine created, so the two never compete for GPU memory.
+    park_editor = bool(settings.vllm.enabled and settings.vllm.park_editor)
+
+    evaluator = Evaluator(settings, model, defer_init=park_editor)
 
     if settings.evaluate_model is not None:
         print()
         print(f"Loading model [bold]{settings.evaluate_model}[/]...")
         settings.model = settings.evaluate_model
         model.reset_model()
+        evaluator.initialize()
         print("* Evaluating...")
         for name, score in evaluator.get_scores():
             print(f"  * [bold]{name}:[/] [green]{score.rich_display}[/]")
@@ -593,7 +599,16 @@ def run():
 
     print()
     print("Loading and initializing modifiers...")
-    modifier_entries = load_and_init_modifiers(settings, model)
+    if park_editor:
+        # The modifier's one-time capture runs on the GPU, so do it before the vLLM
+        # engine is created; then park the HuggingFace model and initialize the scorers,
+        # which loads vLLM onto the now-free GPU.
+        modifier_entries = load_and_init_modifiers(settings, model)
+        model.park()
+        evaluator.initialize()
+    else:
+        evaluator.initialize()
+        modifier_entries = load_and_init_modifiers(settings, model)
 
     # `load_and_init_modifiers` currently guarantees that the returned list has exactly one element.
     # This may change in the future when support for multiple modifiers is implemented.

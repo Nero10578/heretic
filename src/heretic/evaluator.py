@@ -33,10 +33,17 @@ class Evaluator:
     settings: Settings
     model: Model
 
-    def __init__(self, settings: Settings, model: Model):
+    def __init__(
+        self,
+        settings: Settings,
+        model: Model,
+        defer_init: bool = False,
+    ):
         self.settings = settings
         self.model = model
         self._scorer_entries: list[ScorerEntry] = []
+        self.baseline_scores: list[tuple[str, Score]] = []
+        self._initialized = False
 
         print()
         print("Loading and initializing scorers...")
@@ -46,6 +53,23 @@ class Evaluator:
         # trial, so the baseline and the trial scores always come from the same backend
         # (which the KL scorer requires for its divergence to be meaningful).
         self._backend = self._make_backend()
+
+        # `defer_init` lets the caller postpone the generating init (prompt filtering and
+        # baselines) until after the modifier's one-time initialization has released the
+        # GPU (see [vllm] park_editor).
+        if not defer_init:
+            self.initialize()
+
+    def initialize(self) -> None:
+        """
+        Run the generating part of scorer initialization and compute baseline scores.
+
+        Idempotent. Runs automatically from the constructor unless construction deferred
+        it, in which case the caller must invoke it exactly once before `get_scores`.
+        """
+        if self._initialized:
+            return
+        self._initialized = True
 
         # Share one Context between scorer init (prompt filtering) and baseline
         # computation. Both run on the unmodified base model, so cached responses are

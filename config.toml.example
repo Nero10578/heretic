@@ -94,6 +94,7 @@ scorers = [
 [vllm]
 enabled = false
 model = ""                       # empty = main model; may point at a pre-quantized base
+park_editor = false              # move the HF model to CPU after init so vLLM owns the GPU
 mode = "inprocess"               # only "inprocess" is implemented
 dtype = "auto"                   # "auto", "bfloat16", or a quant method such as "gptq"
 tensor_parallel_size = 1
