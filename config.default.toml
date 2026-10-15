@@ -323,6 +323,12 @@ history_size = 10
 # Whether to print the loss value for each L-BFGS optimization step.
 print_loss = false
 
+# Run the float32 inner optimization with TF32 tensor cores. Without it, a single
+# float32 matmul against the full weight matrices can run long enough to trip the CUDA
+# launch timeout (cudaErrorLaunchTimeout). TF32 only affects this optimization,
+# not evaluation, and makes it several times faster.
+use_tf32 = true
+
 # Dataset of prompts that tend to produce desirable responses.
 [modifier.ARA.good_prompts]
 dataset = "mlabonne/harmless_alpaca"

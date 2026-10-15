@@ -112,3 +112,6 @@ column = "text"
 [modifier.ARA]
 lora_rank = 128
 filter_prompts = true
+# Use TF32 for the float32 inner optimization (avoids cudaErrorLaunchTimeout on long
+# reasoning, and much faster). Set false for bit-exact fp32.
+use_tf32 = true

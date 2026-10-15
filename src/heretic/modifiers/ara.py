@@ -113,6 +113,16 @@ class Settings(BaseModel):
         description="Whether to print the loss value for each L-BFGS optimization step.",
     )
 
+    use_tf32: bool = Field(
+        default=True,
+        description=(
+            "Run the (float32) inner optimization with TF32 tensor cores. The matmuls "
+            "involve the full weight matrices and the prompt I/O, so without this a "
+            "single kernel can run long enough to trip the CUDA launch timeout. TF32 "
+            "only affects this optimization, not evaluation, and is several times faster."
+        ),
+    )
+
     filter_prompts: bool = Field(
         default=False,
         description=(
@@ -277,6 +287,19 @@ class ARA(Modifier[Parameters]):
         )
 
     def modify_model(self, ctx: Context, parameters: Parameters) -> None:
+        # The optimization below works in float32 and multiplies the full weight matrices
+        # by the prompt I/O. A single such matmul can run long enough to trip the CUDA
+        # launch timeout, so use TF32 tensor cores for its duration. The synchronize at
+        # the end makes such an error surface here instead of in a later, unrelated call.
+        previous_allow_tf32 = torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = self.settings.use_tf32
+        try:
+            self._modify_model(ctx, parameters)
+        finally:
+            torch.backends.cuda.matmul.allow_tf32 = previous_allow_tf32
+            torch.cuda.synchronize()
+
+    def _modify_model(self, ctx: Context, parameters: Parameters) -> None:
         model = ctx.get_model()
 
         # The model's reset zeroes both A and B, where all gradients vanish,
