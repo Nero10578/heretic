@@ -204,6 +204,30 @@ class ARA(Modifier[Parameters]):
     def init(self, ctx: Context) -> None:
         model = ctx.get_model()
 
+        cache = self.init_cache()
+        if cache is not None:
+            cached = cache.load()
+            if cached is not None:
+                self.good_prompt_count = cached["good_prompt_count"]
+                self.bad_prompt_count = cached["bad_prompt_count"]
+                self.good_module_io = cached["good_module_io"]
+                self.bad_module_io = cached["bad_module_io"]
+                print()
+                print(
+                    f"Reusing cached initialization for [bold]{self.modifier_name}[/]: "
+                    f"[bold]{self.good_prompt_count}[/] good and "
+                    f"[bold]{self.bad_prompt_count}[/] bad prompts."
+                )
+                model.apply_lora(self.settings.lora_rank)
+                return
+
+        # Capture module I/O while the reasoning is being generated (when
+        # capture_during_generation is enabled) instead of re-forwarding the prompt plus
+        # reasoning afterwards. The filtering below is the generation this reuses. ARA
+        # only needs module I/O, so skip the (unused, large) logits capture.
+        ctx.capture_module_io_default = True
+        ctx.capture_logits_default = False
+
         print()
         print(
             f"Loading good prompts from [bold]{format_dataset_specification(self.settings.good_prompts)}[/]..."
@@ -233,6 +257,16 @@ class ARA(Modifier[Parameters]):
         print()
         print("Obtaining module I/O for bad prompts...")
         self.bad_module_io = ctx.get_module_io(bad_prompts)
+
+        if cache is not None:
+            cache.save(
+                {
+                    "good_prompt_count": self.good_prompt_count,
+                    "bad_prompt_count": self.bad_prompt_count,
+                    "good_module_io": self.good_module_io,
+                    "bad_module_io": self.bad_module_io,
+                }
+            )
 
         # LoRA B matrices are initialized to zero by default in PEFT,
         # so we don't need to do anything manually.

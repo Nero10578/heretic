@@ -8,15 +8,32 @@ import sys
 import types
 from pathlib import Path
 from types import ModuleType
-from typing import Annotated, Any, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import (
+    Annotated,
+    Any,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 import torch
 from pydantic import BaseModel
 from torch import Tensor
 
+from .cache import InitCache, environment_key, plugin_namespace
 from .config import DatasetSpecification, SingleDatasetSpecification
 from .config import Settings as HereticSettings
-from .model import GenerationRecord, Model, ModuleIO
+from .model import (
+    CaptureRequest,
+    GenerationRecord,
+    Model,
+    ModuleIO,
+    merge_module_io_rows,
+    split_module_io_rows,
+)
 from .utils import Prompt, batchify, deep_merge_dicts, is_keyword_match, load_prompts
 
 T = TypeVar("T")
@@ -160,6 +177,14 @@ class Context:
         # Per-prompt generation records, keyed by prompt, so that refusal scoring and
         # logit capture share a single generation instead of regenerating the reasoning.
         self._generation_records: dict[tuple[str, str], GenerationRecord] = {}
+        # Whether to capture logits/module I/O during generation for prompts generated in
+        # this context (only acted on when capture_during_generation is enabled). Logits
+        # are captured for every generation because KL scorers need them; module I/O is
+        # only needed by the modifier, which enables it before generating its prompts.
+        self.capture_logits_default = getattr(
+            settings, "capture_during_generation", False
+        )
+        self.capture_module_io_default = False
 
     def _prompt_key(self, prompt: Prompt) -> tuple[str, str]:
         return (prompt.system, prompt.user)
@@ -179,7 +204,12 @@ class Context:
 
         if missing:
             records = self._model.get_response_records_batched(
-                missing, skip_special_tokens=True
+                missing,
+                skip_special_tokens=True,
+                capture=CaptureRequest(
+                    logits=self.capture_logits_default,
+                    module_io=self.capture_module_io_default,
+                ),
             )
             for prompt, record in zip(missing, records):
                 self._generation_records[self._prompt_key(prompt)] = record
@@ -223,30 +253,60 @@ class Context:
             after_reasoning = self._settings.generate_chain_of_thought
 
         # Reuse the reasoning already generated for these prompts (e.g. for refusal
-        # filtering) instead of regenerating it to locate the capture position.
+        # filtering) instead of regenerating it to locate the capture position. When the
+        # capture was taken during that generation, use it directly.
         if after_reasoning:
             # First answer token: the token after the reasoning block closes.
-            capture_ids = [
-                record.capture_ids for record in self.get_generation_records(prompts)
-            ]
+            records = self.get_generation_records(prompts)
+            captured = [record.answer_logits for record in records]
+            capture_ids = [record.capture_ids for record in records]
         elif self._settings.generate_chain_of_thought:
             # First response token: skip the model's thinking-start marker so that the
             # captured distribution is over the first token that carries content, rather
             # than the (near-deterministic) marker token.
-            capture_ids = [
-                record.first_content_ids
-                for record in self.get_generation_records(prompts)
-            ]
+            records = self.get_generation_records(prompts)
+            captured = [record.content_logits for record in records]
+            capture_ids = [record.first_content_ids for record in records]
         else:
             return self._model.get_logits_batched(prompts, after_reasoning)
 
-        return torch.cat(
+        return self._assemble_logits(captured, capture_ids)
+
+    def _assemble_logits(
+        self,
+        captured: list[Tensor | None],
+        capture_ids: list[list[int]],
+    ) -> Tensor:
+        """
+        Combine per-prompt logits captured during generation with a separate capture
+        forward for any prompts that were not captured (e.g. reasoning that never
+        closed). When nothing was captured this is exactly the old capture-forward path.
+        """
+        missing = [index for index, value in enumerate(captured) if value is None]
+        if not missing:
+            return torch.stack(cast(list[Tensor], captured), dim=0)
+
+        fallback = torch.cat(
             [
                 self._model.get_logits_from_capture_ids(batch)
                 for batch in batchify(
-                    capture_ids, self._settings.capture_batch_size
+                    [capture_ids[index] for index in missing],
+                    self._settings.capture_batch_size,
                 )
             ],
+            dim=0,
+        )
+
+        if len(missing) == len(captured):
+            return fallback
+
+        result: list[Tensor | None] = list(captured)
+        for offset, index in enumerate(missing):
+            result[index] = fallback[offset]
+
+        reference = next(value for value in result if value is not None)
+        return torch.stack(
+            [cast(Tensor, value).to(reference) for value in result],
             dim=0,
         )
 
@@ -280,15 +340,38 @@ class Context:
     def get_module_io(self, prompts: list[Prompt]) -> ModuleIO:
         """
         Module I/O at the capture position. Reuses the reasoning already generated for
-        these prompts within this context instead of regenerating it.
+        these prompts within this context instead of regenerating it, and uses module I/O
+        captured during that generation when available.
         """
         if not self._settings.generate_chain_of_thought:
             return self._model.get_module_io_batched(prompts)
 
-        capture_ids = [
-            record.capture_ids for record in self.get_generation_records(prompts)
-        ]
-        return self._model.get_module_io_batched(prompts, capture_ids)
+        records = self.get_generation_records(prompts)
+        rows = [record.module_io_row for record in records]
+        missing = [index for index, row in enumerate(rows) if row is None]
+
+        if not missing:
+            return merge_module_io_rows(
+                cast(list[ModuleIO], rows), len(self._model.get_layers())
+            )
+
+        capture_ids = [records[index].capture_ids for index in missing]
+
+        if len(missing) == len(rows):
+            # Nothing was captured: exactly the old batched capture-forward path.
+            return self._model.get_module_io_batched(prompts, capture_ids)
+
+        fallback_io = self._model.get_module_io_batched(
+            [prompts[index] for index in missing],
+            capture_ids,
+        )
+        fallback_rows = split_module_io_rows(fallback_io, len(missing))
+        for offset, index in enumerate(missing):
+            rows[index] = fallback_rows[offset]
+
+        return merge_module_io_rows(
+            cast(list[ModuleIO], rows), len(self._model.get_layers())
+        )
 
     def get_model(self) -> Model:
         """
@@ -468,6 +551,21 @@ class Plugin:
             ):
                 specifications.append(value)
         return specifications
+
+    def init_cache(self) -> InitCache | None:
+        """
+        Cache handle for this plugin's base-model initialization results, or None when
+        caching is disabled (`init_cache = false`). Cached values are keyed by the global
+        settings that determine them, the plugin's own settings, and the source hash, so
+        they are reused across runs but invalidated when anything relevant changes.
+        """
+        if not self.heretic_settings.init_cache:
+            return None
+        return InitCache(
+            directory=self.heretic_settings.init_cache_dir,
+            environment=environment_key(self.heretic_settings),
+            namespace=plugin_namespace(self.__class__.__name__, self.settings),
+        )
 
     def init(self, ctx: Context) -> None:
         """

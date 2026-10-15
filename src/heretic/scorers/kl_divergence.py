@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
 from heretic.plugin import Context
 from heretic.scorer import Score, Scorer, apply_refusal_filter
-from heretic.utils import REFUSAL_MARKERS, format_dataset_specification, print
+from heretic.utils import (
+    REFUSAL_MARKERS,
+    Prompt,
+    format_dataset_specification,
+    print,
+)
 
 
 class Settings(BaseModel):
@@ -25,11 +30,11 @@ class Settings(BaseModel):
     capture_position: Literal["auto", "first_token", "first_answer_token"] = Field(
         default="auto",
         description=(
-            'Which next-token distribution to compare against the baseline: '
+            "Which next-token distribution to compare against the baseline: "
             '"first_token" (the first token of the response that is not part of the '
             "model's thinking-start marker, e.g. the first reasoning token rather than "
             'the marker itself), "first_answer_token" (the first token after the '
-            "reasoning block closes), or \"auto\" (follow the global "
+            'reasoning block closes), or "auto" (follow the global '
             "generate_chain_of_thought setting)."
         ),
     )
@@ -76,6 +81,25 @@ class KLDivergence(Scorer):
         return None
 
     def init(self, ctx: Context) -> None:
+        cache = self.init_cache()
+
+        if cache is not None:
+            cached = cache.load()
+            if cached is not None:
+                self.prompts = [
+                    Prompt(system=system, user=user)
+                    for system, user in cached["prompts"]
+                ]
+                self._baseline_logprobs = cached["baseline_logprobs"].to(
+                    ctx.get_model().output_device()
+                )
+                print()
+                print(
+                    f"Reusing cached initialization for [bold]{self.score_name}[/] "
+                    f"([bold]{len(self.prompts)}[/] prompts)."
+                )
+                return
+
         print()
         print(
             f"Loading KL divergence evaluation prompts from [bold]{format_dataset_specification(self.settings.prompts)}[/]..."
@@ -94,6 +118,14 @@ class KLDivergence(Scorer):
         baseline_logits = ctx.get_logits(self.prompts, self._after_reasoning)
 
         self._baseline_logprobs = F.log_softmax(baseline_logits, dim=-1)
+
+        if cache is not None:
+            cache.save(
+                {
+                    "prompts": [[p.system, p.user] for p in self.prompts],
+                    "baseline_logprobs": self._baseline_logprobs.detach().cpu(),
+                }
+            )
 
     def get_score(self, ctx: Context) -> Score:
         logits = ctx.get_logits(self.prompts, self._after_reasoning)

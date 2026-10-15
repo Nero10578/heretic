@@ -10,6 +10,7 @@ from heretic.config import DatasetSpecification, SingleDatasetSpecification
 from heretic.scorer import Context, Score, Scorer, apply_refusal_filter
 from heretic.utils import (
     REFUSAL_MARKERS,
+    Prompt,
     format_dataset_specification,
     is_keyword_match,
     print,
@@ -69,6 +70,22 @@ class KeywordRate(Scorer):
         return self.settings.score_name
 
     def init(self, ctx: Context) -> None:
+        cache = self.init_cache()
+
+        if cache is not None:
+            cached = cache.load()
+            if cached is not None:
+                self.prompts = [
+                    Prompt(system=system, user=user)
+                    for system, user in cached["prompts"]
+                ]
+                print()
+                print(
+                    f"Reusing cached initialization for [bold]{self.score_name}[/] "
+                    f"([bold]{len(self.prompts)}[/] prompts)."
+                )
+                return
+
         print()
         print(
             f"Loading {self.settings.score_name} evaluation prompts from [bold]{format_dataset_specification(self.settings.prompts)}[/]..."
@@ -82,6 +99,9 @@ class KeywordRate(Scorer):
             self.settings.filter_prompts,
             self.settings.keyword_markers,
         )
+
+        if cache is not None:
+            cache.save({"prompts": [[p.system, p.user] for p in self.prompts]})
 
     def get_score(self, ctx: Context) -> Score:
         match_count = 0

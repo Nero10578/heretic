@@ -49,7 +49,18 @@ batch_size = 0  # auto
 # forward over the whole prompt plus reasoning, so their peak VRAM and kernel size scale
 # with batch times sequence length. Keep this small to avoid out-of-memory errors and
 # driver launch timeouts when reasoning is long; generation still uses batch_size.
+# When capture_during_generation is enabled, most of these forwards are avoided, so this
+# mainly bounds the fallback forwards for prompts whose reasoning never closed.
 capture_batch_size = 8
+
+# If true, capture KL logits and module I/O at the capture positions while the reasoning
+# is being generated, instead of running a separate forward over prompt + reasoning
+# afterwards. This roughly halves initialization and the per-trial evaluation cost, and
+# avoids the large capture kernels behind out-of-memory errors and launch timeouts. It
+# requires the reasoning block to close within the token budget (prompts that never close
+# fall back to the separate forward), and because it runs through a different batching and
+# kernel path it can change results slightly, so it is off by default.
+capture_during_generation = false
 
 # Maximum batch size to try when automatically determining the optimal batch size.
 max_batch_size = 128
@@ -150,6 +161,16 @@ n_startup_trials = 30
 
 # Directory to save and load study progress to/from.
 study_checkpoint_dir = "checkpoints"
+
+# Cache the results of the (expensive, base-model) plugin initialization - filtered prompt
+# sets, KL divergence baselines, and ARA module I/O - on disk, keyed by the model and the
+# settings that determine them. Resuming a run then skips the initialization instead of
+# recomputing it. Entries are invalidated automatically when the relevant settings or the
+# Heretic source change, and can be deleted freely.
+init_cache = true
+
+# Directory to store the plugin initialization cache in.
+init_cache_dir = "checkpoints/init-cache"
 
 # Maximum size for individual safetensors files generated when exporting a model.
 max_shard_size = "5GB"

@@ -297,6 +297,20 @@ class Settings(BaseSettings):
         description="Number of input sequences to process in parallel (0 = auto).",
     )
 
+    capture_during_generation: bool = Field(
+        default=False,
+        description=(
+            "If true, capture KL logits and module I/O at the capture positions while the "
+            "reasoning is being generated, instead of running a separate forward over "
+            "prompt + reasoning afterwards. This roughly halves initialization and the "
+            "per-trial evaluation cost, and avoids the large capture kernels behind "
+            "out-of-memory errors and CUDA launch timeouts. It relies on the reasoning "
+            "block closing within the token budget (prompts that never close fall back to "
+            "the separate forward), and because capture runs through a different batching "
+            "and kernel path it can change results slightly, so it is off by default."
+        ),
+    )
+
     capture_batch_size: PositiveInt = Field(
         default=8,
         description=(
@@ -533,6 +547,24 @@ class Settings(BaseSettings):
     study_checkpoint_dir: str = Field(
         default="checkpoints",
         description="Directory to save and load study progress to/from.",
+        exclude=True,
+    )
+
+    init_cache: bool = Field(
+        default=True,
+        description=(
+            "If true, cache the results of the (expensive, base-model) plugin "
+            "initialization - filtered prompt sets, KL divergence baseline distributions, "
+            "and ARA module I/O - on disk, keyed by the model and the settings that "
+            "determine them. Resuming a run then skips the multi-hour initialization "
+            "instead of recomputing it. The cache is invalidated automatically when the "
+            "relevant settings or the Heretic source code change."
+        ),
+    )
+
+    init_cache_dir: str = Field(
+        default="checkpoints/init-cache",
+        description="Directory to store the plugin initialization cache in.",
         exclude=True,
     )
 

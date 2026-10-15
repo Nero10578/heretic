@@ -9,16 +9,30 @@ max_response_length = 300
 export_strategy = "adapter"
 
 # Fixed batch size (non-zero skips auto-tuning; 0 = auto).
-batch_size = 32
+batch_size = 8
 
 # Batch size for the capture forwards (KL logits, residuals, module I/O). These run one
 # forward over prompt + full reasoning, so their peak VRAM and kernel size scale with
 # batch times sequence length. Keep small to avoid OOM / driver launch timeouts.
+# With capture_during_generation enabled, only the fallback forwards remain.
 capture_batch_size = 8
+
+# Capture KL logits and module I/O at the capture positions while the reasoning is
+# generated, instead of re-forwarding prompt + reasoning afterwards. Roughly halves
+# initialization and per-trial capture cost, and avoids the large capture kernels behind
+# OOM / launch timeouts. Requires the reasoning block to close within the budget (prompts
+# that never close fall back to the separate forward). Runs through a different batching
+# and kernel path, so it can shift results slightly.
+capture_during_generation = true
 
 n_trials = 100
 n_startup_trials = 30
 print_debug_information = true
+
+# Reuse cached base-model initialization (filtered prompt sets, KL baselines, ARA module
+# I/O) across runs, so resuming skips the expensive initialization instead of recomputing
+# it. Automatically invalidated when the relevant settings or the Heretic source change.
+init_cache = true
 
 # Attention backend. "auto" uses FlashAttention-2/3 when the flash-attn package is
 # installed (fastest for the long reasoning sequences), otherwise the library default
@@ -35,7 +49,7 @@ attn_implementation = "auto"
 # Residuals/module I/O (the ablation direction) and KL logits are captured at
 # the first answer token, matching where the behavior of interest lives.
 generate_chain_of_thought = true
-max_thought_length = 8192
+max_thought_length = 4096
 
 # Abort a prompt's generation as soon as it falls into a repetition loop, so a broken
 # model doesn't burn the full token budget. Such responses are counted as refusals.

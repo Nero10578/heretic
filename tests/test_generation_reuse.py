@@ -22,7 +22,10 @@ class FakeModel:
         self.residuals_mean_calls: list[list[list[int]] | None] = []
 
     def get_response_records_batched(
-        self, prompts: list[Prompt], skip_special_tokens: bool = False
+        self,
+        prompts: list[Prompt],
+        skip_special_tokens: bool = False,
+        capture: Any = None,
     ) -> list[GenerationRecord]:
         self.generated_batches.append([prompt.user for prompt in prompts])
         return [
@@ -38,9 +41,7 @@ class FakeModel:
         ]
 
     def get_logits_from_capture_ids(self, capture_ids: list[list[int]]) -> torch.Tensor:
-        assert all(
-            ids in ([1, 2, 3], [4, 5, 6]) for ids in capture_ids
-        )
+        assert all(ids in ([1, 2, 3], [4, 5, 6]) for ids in capture_ids)
         return torch.zeros((len(capture_ids), 4))
 
     def get_logits_batched(
@@ -74,6 +75,7 @@ class GenerationReuseTests(unittest.TestCase):
                 batch_size=32,
                 capture_batch_size=8,
                 generate_chain_of_thought=True,
+                capture_during_generation=False,
             ),
         )
         model = FakeModel()

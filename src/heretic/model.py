@@ -80,6 +80,12 @@ class GenerationRecord:
     unfinished: bool
     repetition_aborted: bool
     generated_token_count: int
+    # Captured during generation (only when capture_during_generation is enabled and the
+    # reasoning block closed, see _GenerationCapture). None means the value must be
+    # obtained with a separate forward over prompt + reasoning.
+    answer_logits: Tensor | None = None
+    content_logits: Tensor | None = None
+    module_io_row: ModuleIO | None = None
 
 
 def reasoning_start_skip_length(
@@ -178,6 +184,261 @@ class RepetitionStoppingLogitsProcessor(LogitsProcessor):
             for eos_token_id in self._eos_token_ids:
                 scores[repetitive, eos_token_id] = float("inf")
 
+        return scores
+
+
+@dataclass
+class CaptureRequest:
+    """
+    Which captures to take while generating a response. Model.get_response_records only
+    acts on this when `capture_during_generation` is enabled and the model supports it
+    (reasoning mode with a configured closing tag); otherwise the records are returned
+    uncaptured and callers fall back to a separate forward.
+    """
+
+    logits: bool = False
+    module_io: bool = False
+
+
+def merge_module_io_rows(rows: list[ModuleIO], layer_count: int) -> ModuleIO:
+    """
+    Combine per-prompt module I/O (each with one row per module) into a single ModuleIO,
+    concatenating every module's rows in prompt order. Mirrors get_module_io_batched.
+    """
+    merged: ModuleIO = [{} for _ in range(layer_count)]
+    for row in rows:
+        for layer_index, components in enumerate(row):
+            for component, modules in components.items():
+                target = merged[layer_index].setdefault(component, {})
+                for module_index, (input, output) in modules.items():
+                    existing = target.get(module_index)
+                    if existing is None:
+                        target[module_index] = (input, output)
+                    else:
+                        target[module_index] = (
+                            torch.cat([existing[0], input], dim=0),
+                            torch.cat([existing[1], output], dim=0),
+                        )
+    return merged
+
+
+def split_module_io_rows(module_io: ModuleIO, count: int) -> list[ModuleIO]:
+    """
+    Split a ModuleIO whose module tensors hold `count` rows into one single-row ModuleIO
+    per prompt. Only valid when every row is present for every module, which holds for
+    dense models (the only case where captured and fallback rows are mixed).
+    """
+    rows: list[ModuleIO] = [[{} for _ in module_io] for _ in range(count)]
+    for layer_index, components in enumerate(module_io):
+        for component, modules in components.items():
+            for module_index, (input, output) in modules.items():
+                if input.shape[0] != count:
+                    raise ValueError(
+                        "Module I/O rows do not match the expected prompt count"
+                    )
+                for row_index in range(count):
+                    rows[row_index][layer_index].setdefault(component, {})[
+                        module_index
+                    ] = (
+                        input[row_index : row_index + 1],
+                        output[row_index : row_index + 1],
+                    )
+    return rows
+
+
+class _GenerationCapture:
+    """
+    Captures logits and/or module I/O at the capture positions while a response is being
+    generated, so no separate forward over prompt + reasoning is needed.
+
+    Positions are located online from the tokens the generator produces:
+    - the first-content position, where the decoded generation first ends with a
+      thinking-start marker (probed within a short window),
+    - the answer position, where the generated tokens first end with a
+      chain-of-thought closing tag.
+
+    The distribution a logits processor receives at the step that appended token index
+    `a` is exactly the distribution a forward over `prompt + generated[:a]` would return,
+    and the module I/O captured in that same forward is the I/O at its last position, so
+    the online captures match the separate capture forward. Rows whose reasoning block
+    never closes (or whose marker/tag is not found online) stay uncaptured and the caller
+    falls back to the separate forward for them.
+    """
+
+    def __init__(
+        self,
+        model: "Model",
+        prompt_length: int,
+        prompt_ids: list[list[int]],
+        capture_logits: bool,
+        capture_module_io: bool,
+    ) -> None:
+        self._model = model
+        self._prompt_length = prompt_length
+        self._prompt_ids = prompt_ids
+        self._capture_logits = capture_logits
+        self._capture_module_io = capture_module_io
+
+        self._close_tag_ids = model._reasoning_close_tag_ids()
+        self._max_tag_length = max((len(tag) for tag in self._close_tag_ids), default=0)
+        self._start_markers = model._reasoning_start_markers()
+        self._probe_tokens = 8
+        self._window_tokens = 128
+
+        self.answer_logits: dict[int, Tensor] = {}
+        self.content_logits: dict[int, Tensor] = {}
+        self.module_io_rows: dict[int, ModuleIO] = {}
+        # Generated-token index (appended count) at which each capture was taken, used to
+        # verify against the post-hoc capture position before trusting the capture.
+        self.answer_positions: dict[int, int] = {}
+        self.content_positions: dict[int, int] = {}
+
+        # Most recent forward's per-module I/O, overwritten every step and cleared at the
+        # start of each forward so that modules that did not fire this step are absent.
+        self._io: dict[int, dict[str, dict[int, tuple[Tensor, Tensor]]]] = {}
+        self._io_complete = False
+        self._expected_io_count = 0
+
+        self._layer_count = len(model.get_layers())
+        self._handles: list[RemovableHandle] = []
+
+    def register(self) -> None:
+        self._handles.append(
+            self._model.model.register_forward_pre_hook(self._clear_io)
+        )
+
+        if not self._capture_module_io:
+            return
+
+        for layer_index in range(self._layer_count):
+            for component, modules in self._model.get_layer_modules(
+                layer_index
+            ).items():
+                self._expected_io_count += len(modules)
+                for module_index, module in enumerate(modules):
+                    self._handles.append(
+                        module.register_forward_hook(
+                            self._make_hook(layer_index, component, module_index)
+                        )
+                    )
+
+    def remove(self) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
+
+    def _clear_io(self, module: Module, args: Any) -> None:
+        self._io.clear()
+
+    def _make_hook(
+        self,
+        layer_index: int,
+        component: str,
+        module_index: int,
+    ) -> Callable[[Module, tuple[Tensor, ...], Tensor], None]:
+        def hook(
+            module: Module,
+            inputs: tuple[Tensor, ...],
+            outputs: Tensor,
+        ) -> None:
+            components = self._io.setdefault(layer_index, {}).setdefault(component, {})
+            # At prefill the module input/output span the whole prompt, which can be very
+            # large; keep only the last position so the full activation is not retained.
+            # At decode steps (one position) a view is enough.
+            if inputs[0].shape[1] > 1:
+                components[module_index] = (
+                    inputs[0][:, -1, :].detach().clone(),
+                    outputs[:, -1, :].detach().clone(),
+                )
+            else:
+                components[module_index] = (inputs[0][:, -1, :], outputs[:, -1, :])
+
+        return hook
+
+    def processor(self) -> LogitsProcessor:
+        return _CaptureLogitsProcessor(self)
+
+    def _store_logits(self, row_logits: Tensor) -> Tensor:
+        return row_logits.detach().to(self._model.output_device())
+
+    def _build_row(self, row_index: int) -> ModuleIO:
+        row: ModuleIO = [{} for _ in range(self._layer_count)]
+        for layer_index, components in self._io.items():
+            for component, modules in components.items():
+                for module_index, (input, output) in modules.items():
+                    row[layer_index].setdefault(component, {})[module_index] = (
+                        input[row_index : row_index + 1].detach().clone().cpu(),
+                        output[row_index : row_index + 1].detach().clone().cpu(),
+                    )
+        return row
+
+    def observe(self, input_ids: Tensor, scores: Tensor) -> None:
+        generated = input_ids[:, self._prompt_length :]
+        appended = generated.shape[1]
+        if appended <= 0:
+            return
+
+        if self._capture_module_io:
+            present = sum(
+                len(modules)
+                for components in self._io.values()
+                for modules in components.values()
+            )
+            self._io_complete = present == self._expected_io_count
+
+        if self._max_tag_length:
+            tail = generated[:, -self._max_tag_length :].tolist()
+        else:
+            tail = [[] for _ in range(input_ids.shape[0])]
+
+        for row_index in range(input_ids.shape[0]):
+            answer_done = row_index in self.answer_logits
+            content_done = row_index in self.content_logits
+
+            if (
+                not answer_done
+                and self._max_tag_length
+                and any(
+                    len(tail[row_index]) >= len(tag)
+                    and tail[row_index][-len(tag) :] == tag
+                    for tag in self._close_tag_ids
+                )
+            ):
+                self._capture_answer(row_index, appended, scores)
+
+            if (
+                self._capture_logits
+                and not content_done
+                and appended <= self._probe_tokens
+                and self._start_markers
+            ):
+                ids = self._prompt_ids[row_index] + generated[row_index].tolist()
+                text = self._model.decode_tokens(ids[-self._window_tokens :])
+                if any(text.endswith(marker) for marker in self._start_markers):
+                    self.content_logits[row_index] = self._store_logits(
+                        scores[row_index]
+                    )
+                    self.content_positions[row_index] = appended
+
+    def _capture_answer(self, row_index: int, appended: int, scores: Tensor) -> None:
+        if self._capture_logits:
+            self.answer_logits[row_index] = self._store_logits(scores[row_index])
+        if self._capture_module_io and self._io_complete:
+            self.module_io_rows[row_index] = self._build_row(row_index)
+        self.answer_positions[row_index] = appended
+
+
+class _CaptureLogitsProcessor(LogitsProcessor):
+    """
+    Drives _GenerationCapture from inside the generation loop. Registered before the
+    repetition processor so it sees the raw (unmodified) scores.
+    """
+
+    def __init__(self, capture: _GenerationCapture) -> None:
+        self._capture = capture
+
+    def __call__(self, input_ids: Tensor, scores: Tensor) -> Tensor:
+        self._capture.observe(input_ids, scores)
         return scores
 
 
@@ -548,6 +809,15 @@ class Model:
         # Text-only models.
         return model.model.layers  # ty: ignore[unresolved-attribute, invalid-return-type]
 
+    def output_device(self) -> torch.device:
+        """
+        Device on which captured logits/residuals are returned. Matches the
+        offload_outputs_to_cpu convention used by the capture forwards.
+        """
+        if self.settings.offload_outputs_to_cpu:
+            return torch.device("cpu")
+        return self.model.device
+
     def get_layer_modules(self, layer_index: int) -> dict[str, list[Module]]:
         layer = self.get_layers()[layer_index]
 
@@ -652,7 +922,10 @@ class Model:
             ),
         )
 
-        if self.settings.response_prefix and not self.settings.generate_chain_of_thought:
+        if (
+            self.settings.response_prefix
+            and not self.settings.generate_chain_of_thought
+        ):
             # Append the common response prefix to the prompts so that evaluation happens
             # at the point where responses start to differ for different prompts.
             chat_prompts = [
@@ -719,9 +992,7 @@ class Model:
         finish within the token budget fall back to the full generation.
         """
         records = self.get_response_records(prompts)
-        return self._capture_inputs_from_ids(
-            [record.capture_ids for record in records]
-        )
+        return self._capture_inputs_from_ids([record.capture_ids for record in records])
 
     def _capture_inputs_from_ids(self, capture_ids: list[list[int]]) -> BatchEncoding:
         """
@@ -737,7 +1008,9 @@ class Model:
         attention_mask = torch.zeros((len(capture_ids), max_length), dtype=torch.long)
         for index, ids in enumerate(capture_ids):
             length = len(ids)
-            input_ids[index, max_length - length :] = torch.tensor(ids, dtype=torch.long)
+            input_ids[index, max_length - length :] = torch.tensor(
+                ids, dtype=torch.long
+            )
             attention_mask[index, max_length - length :] = 1
 
         return BatchEncoding(
@@ -756,42 +1029,89 @@ class Model:
             return self.settings.max_thought_length + self.settings.max_response_length
         return self.settings.max_response_length
 
+    def _capture_during_generation_supported(self) -> bool:
+        """
+        Whether captures can be taken while generating. Requires the feature to be
+        enabled in reasoning mode with a configured chain-of-thought closing tag, so
+        that the answer position can be located from the generated tokens.
+        """
+        return (
+            self.settings.capture_during_generation
+            and self.settings.generate_chain_of_thought
+            and bool(self._reasoning_close_tag_ids())
+        )
+
     def get_response_records(
         self,
         prompts: list[Prompt],
         skip_special_tokens: bool = False,
+        capture: CaptureRequest | None = None,
     ) -> list[GenerationRecord]:
         """
         Generate one response per prompt and return, for each, the decoded answer
         together with the token IDs up to the answer-capture position. Sharing these
         lets refusal scoring and logit/residual capture reuse a single generation
         instead of regenerating the reasoning separately.
+
+        When `capture` requests logits and/or module I/O and `capture_during_generation`
+        is enabled, they are taken during this same generation (see _GenerationCapture),
+        so no separate forward over prompt + reasoning is needed.
         """
         inputs = self._tokenize_prompts(prompts)
+        input_ids = cast(Tensor, inputs["input_ids"])
+        attention_mask = cast(Tensor, inputs["attention_mask"])
+        prompt_length = input_ids.shape[1]
+        # Real (unpadded) prompt token IDs per row, needed to locate the marker position
+        # online during generation. The prompt is left-padded (see __init__).
+        prompt_ids_per_row = [
+            input_ids[index][attention_mask[index] == 1].tolist()
+            for index in range(input_ids.shape[0])
+        ]
+
+        processors: list[LogitsProcessor] = []
+        capture_state: _GenerationCapture | None = None
+        if (
+            capture is not None
+            and (capture.logits or capture.module_io)
+            and self._capture_during_generation_supported()
+        ):
+            capture_state = _GenerationCapture(
+                model=self,
+                prompt_length=prompt_length,
+                prompt_ids=prompt_ids_per_row,
+                capture_logits=capture.logits,
+                capture_module_io=capture.module_io,
+            )
+            capture_state.register()
+            # First so it sees the raw scores, before the repetition processor edits them.
+            processors.append(capture_state.processor())
 
         repetition_processor = None
-        extra_kwargs: dict[str, Any] = {}
         if self.settings.abort_repeating_generation:
             repetition_processor = RepetitionStoppingLogitsProcessor(
-                prompt_length=cast(Tensor, inputs["input_ids"]).shape[1],
+                prompt_length=prompt_length,
                 eos_token_ids=self._eos_token_ids(),
                 pad_token_id=self.tokenizer.pad_token_id,
                 period_max=self.settings.repetition_period_max,
                 min_repeats=self.settings.repetition_min_repeats,
             )
-            extra_kwargs["logits_processor"] = LogitsProcessorList([repetition_processor])
+            processors.append(repetition_processor)
 
-        outputs = self._generate_from_inputs(
-            inputs,
-            max_new_tokens=self._response_max_new_tokens(),
-            **extra_kwargs,
-        )
+        extra_kwargs: dict[str, Any] = {}
+        if processors:
+            extra_kwargs["logits_processor"] = LogitsProcessorList(processors)
 
-        # This cast is valid because input_ids is a Tensor
-        # if the tokenizer is invoked with return_tensors="pt", as above.
-        input_ids = cast(Tensor, inputs["input_ids"])
-        attention_mask = cast(Tensor, inputs["attention_mask"])
-        generated = outputs[:, input_ids.shape[1] :]
+        try:
+            outputs = self._generate_from_inputs(
+                inputs,
+                max_new_tokens=self._response_max_new_tokens(),
+                **extra_kwargs,
+            )
+        finally:
+            if capture_state is not None:
+                capture_state.remove()
+
+        generated = outputs[:, prompt_length:]
         pad_id = self.tokenizer.pad_token_id
 
         repetition_aborted_rows = (
@@ -802,10 +1122,7 @@ class Model:
         records: list[GenerationRecord] = []
 
         for index, row in enumerate(generated.tolist()):
-            # The prompt is left-padded (see __init__), so recover its real token IDs
-            # from the attention mask instead of slicing, which would leave the padding
-            # in place and later attend it during logit capture.
-            prompt_ids = input_ids[index][attention_mask[index] == 1].tolist()
+            prompt_ids = prompt_ids_per_row[index]
 
             # Strip any trailing padding left after a sequence hit EOS.
             while row and row[-1] == pad_id:
@@ -845,6 +1162,26 @@ class Model:
                 print(f"* Raw head: {raw[:300]!r}", markup=False)
                 print(f"* Raw tail: {raw[-400:]!r}", markup=False)
 
+            answer_logits: Tensor | None = None
+            content_logits: Tensor | None = None
+            module_io_row: ModuleIO | None = None
+            if capture_state is not None:
+                prompt_token_count = len(prompt_ids)
+                # Only trust a capture when the online-detected position matches the
+                # post-hoc capture position, so a mismatch cannot silently feed the
+                # wrong distribution or module I/O into evaluation.
+                if (
+                    capture_state.answer_positions.get(index)
+                    == len(capture_ids) - prompt_token_count
+                ):
+                    answer_logits = capture_state.answer_logits.get(index)
+                    module_io_row = capture_state.module_io_rows.get(index)
+                if (
+                    capture_state.content_positions.get(index)
+                    == len(first_content_ids) - prompt_token_count
+                ):
+                    content_logits = capture_state.content_logits.get(index)
+
             records.append(
                 GenerationRecord(
                     response=cast(
@@ -859,6 +1196,9 @@ class Model:
                     unfinished=unfinished,
                     repetition_aborted=index in repetition_aborted_rows,
                     generated_token_count=len(row),
+                    answer_logits=answer_logits,
+                    content_logits=content_logits,
+                    module_io_row=module_io_row,
                 )
             )
 
@@ -941,9 +1281,7 @@ class Model:
         The strings that open a chain-of-thought block, i.e. the model's thinking-start
         marker, taken from the initializer part of each `chain_of_thought_skips` pair.
         """
-        return [
-            initializer for initializer, _ in self.settings.chain_of_thought_skips
-        ]
+        return [initializer for initializer, _ in self.settings.chain_of_thought_skips]
 
     def _special_token_ids(self) -> set[int]:
         if self._special_token_ids_cache is None:
@@ -958,7 +1296,16 @@ class Model:
             return []
         return list(eos) if isinstance(eos, (list, tuple)) else [eos]
 
-    def _first_content_ids(self, prompt_ids: list[int], generated_ids: list[int]) -> list[int]:
+    def decode_tokens(self, ids: list[int]) -> str:
+        """
+        Decode raw token IDs without dropping special tokens, so that markers built from
+        special tokens (e.g. channel tags) can still be matched.
+        """
+        return cast(str, self.tokenizer.decode(ids, skip_special_tokens=False))
+
+    def _first_content_ids(
+        self, prompt_ids: list[int], generated_ids: list[int]
+    ) -> list[int]:
         """
         Token IDs up to (but not including) the first token that is not part of the
         model's thinking-start marker. The distribution captured there is over the first
@@ -968,7 +1315,9 @@ class Model:
             prompt_ids,
             generated_ids,
             self._reasoning_start_markers(),
-            lambda ids: cast(str, self.tokenizer.decode(ids, skip_special_tokens=False)),
+            lambda ids: cast(
+                str, self.tokenizer.decode(ids, skip_special_tokens=False)
+            ),
             self._special_token_ids(),
         )
         return prompt_ids + generated_ids[:skip]
@@ -1064,6 +1413,7 @@ class Model:
         self,
         prompts: list[Prompt],
         skip_special_tokens: bool = False,
+        capture: CaptureRequest | None = None,
     ) -> list[GenerationRecord]:
         records: list[GenerationRecord] = []
         unfinished = 0
@@ -1074,6 +1424,7 @@ class Model:
             batch_records = self.get_response_records(
                 batch,
                 skip_special_tokens=skip_special_tokens,
+                capture=capture,
             )
             records.extend(batch_records)
             unfinished += sum(record.unfinished for record in batch_records)

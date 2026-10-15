@@ -3,7 +3,7 @@
 
 import unittest
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 from heretic.config import Settings as HereticSettings
 from heretic.model import GenerationRecord, Model
@@ -16,7 +16,10 @@ class FakeModel:
         self.responses = responses
 
     def get_response_records_batched(
-        self, prompts: list[Prompt], skip_special_tokens: bool = False
+        self,
+        prompts: list[Prompt],
+        skip_special_tokens: bool = False,
+        capture: Any = None,
     ) -> list[GenerationRecord]:
         return [
             GenerationRecord(
