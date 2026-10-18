@@ -255,7 +255,9 @@ class _GenerationCapture:
     - the first-content position, where the decoded generation first ends with a
       thinking-start marker (probed within a short window),
     - the answer position, where the generated tokens first end with a
-      chain-of-thought closing tag.
+      chain-of-thought closing tag, advanced past the whitespace separator that chat
+      templates place before the answer (e.g. Qwen3's "\n\n") to the first token that
+      carries answer content.
 
     The distribution a logits processor receives at the step that appended token index
     `a` is exactly the distribution a forward over `prompt + generated[:a]` would return,
@@ -292,11 +294,24 @@ class _GenerationCapture:
         # verify against the post-hoc capture position before trusting the capture.
         self.answer_positions: dict[int, int] = {}
         self.content_positions: dict[int, int] = {}
+        self._answer_done: set[int] = set()
+
+        # Rows whose reasoning block has closed and whose leading whitespace separator
+        # (e.g. Qwen3's "\n\n" before the answer) is still being skipped. The answer
+        # capture is deferred until the first token that carries content appears, using
+        # the scores and module I/O from the preceding step.
+        self._separator_rows: set[int] = set()
+        self._pending_answer_scores: dict[int, Tensor] = {}
+        self._pending_answer_positions: dict[int, int] = {}
 
         # Most recent forward's per-module I/O, overwritten every step and cleared at the
         # start of each forward so that modules that did not fire this step are absent.
+        # The previous step's I/O is retained because the answer anchor can be one step
+        # after the closing tag when the template emits a whitespace separator.
         self._io: dict[int, dict[str, dict[int, tuple[Tensor, Tensor]]]] = {}
+        self._previous_io: dict[int, dict[str, dict[int, tuple[Tensor, Tensor]]]] = {}
         self._io_complete = False
+        self._previous_io_complete = False
         self._expected_io_count = 0
 
         self._layer_count = len(model.get_layers())
@@ -328,7 +343,9 @@ class _GenerationCapture:
         self._handles.clear()
 
     def _clear_io(self, module: Module, args: Any) -> None:
-        self._io.clear()
+        # Reassign rather than clear: the previous step's I/O is retained so the answer
+        # can still be anchored when a whitespace separator follows the closing tag.
+        self._io = {}
 
     def _make_hook(
         self,
@@ -361,9 +378,13 @@ class _GenerationCapture:
     def _store_logits(self, row_logits: Tensor) -> Tensor:
         return row_logits.detach().to(self._model.output_device())
 
-    def _build_row(self, row_index: int) -> ModuleIO:
+    def _build_row(
+        self,
+        row_index: int,
+        io: dict[int, dict[str, dict[int, tuple[Tensor, Tensor]]]],
+    ) -> ModuleIO:
         row: ModuleIO = [{} for _ in range(self._layer_count)]
-        for layer_index, components in self._io.items():
+        for layer_index, components in io.items():
             for component, modules in components.items():
                 for module_index, (input, output) in modules.items():
                     row[layer_index].setdefault(component, {})[module_index] = (
@@ -385,26 +406,40 @@ class _GenerationCapture:
                 for modules in components.values()
             )
             self._io_complete = present == self._expected_io_count
+        else:
+            self._io_complete = False
 
         if self._max_tag_length:
             tail = generated[:, -self._max_tag_length :].tolist()
         else:
             tail = [[] for _ in range(input_ids.shape[0])]
 
+        last_tokens = generated[:, -1].tolist()
+
         for row_index in range(input_ids.shape[0]):
-            answer_done = row_index in self.answer_logits
             content_done = row_index in self.content_logits
 
-            if (
-                not answer_done
-                and self._max_tag_length
-                and any(
+            if row_index not in self._answer_done:
+                if row_index in self._separator_rows:
+                    # The reasoning block has closed. Skip the template's whitespace
+                    # separator and anchor the answer at the first token that carries
+                    # content, using the distribution from the preceding step (which is
+                    # the one that predicted this token).
+                    if self._model.decode_tokens([last_tokens[row_index]]).strip():
+                        self._capture_answer(
+                            row_index,
+                            self._pending_answer_positions[row_index],
+                            self._pending_answer_scores[row_index],
+                            self._previous_io,
+                            self._previous_io_complete,
+                        )
+                        self._separator_rows.discard(row_index)
+                elif self._max_tag_length and any(
                     len(tail[row_index]) >= len(tag)
                     and tail[row_index][-len(tag) :] == tag
                     for tag in self._close_tag_ids
-                )
-            ):
-                self._capture_answer(row_index, appended, scores)
+                ):
+                    self._separator_rows.add(row_index)
 
             if (
                 self._capture_logits
@@ -420,12 +455,27 @@ class _GenerationCapture:
                     )
                     self.content_positions[row_index] = appended
 
-    def _capture_answer(self, row_index: int, appended: int, scores: Tensor) -> None:
+        for row_index in self._separator_rows:
+            self._pending_answer_scores[row_index] = scores[row_index]
+            self._pending_answer_positions[row_index] = appended
+
+        self._previous_io = self._io
+        self._previous_io_complete = self._io_complete
+
+    def _capture_answer(
+        self,
+        row_index: int,
+        position: int,
+        row_scores: Tensor,
+        io: dict[int, dict[str, dict[int, tuple[Tensor, Tensor]]]],
+        io_complete: bool,
+    ) -> None:
         if self._capture_logits:
-            self.answer_logits[row_index] = self._store_logits(scores[row_index])
-        if self._capture_module_io and self._io_complete:
-            self.module_io_rows[row_index] = self._build_row(row_index)
-        self.answer_positions[row_index] = appended
+            self.answer_logits[row_index] = self._store_logits(row_scores)
+        if self._capture_module_io and io_complete:
+            self.module_io_rows[row_index] = self._build_row(row_index, io)
+        self.answer_positions[row_index] = position
+        self._answer_done.add(row_index)
 
 
 class _CaptureLogitsProcessor(LogitsProcessor):
@@ -1390,6 +1440,26 @@ class Model:
                     break
         return answer_start
 
+    def _answer_content_start_index(
+        self, generated_ids: list[int], answer_start: int
+    ) -> int:
+        """
+        Index of the first token after the reasoning block that carries answer content.
+
+        Chat templates typically insert a whitespace separator between the closing tag
+        and the answer (Qwen3, for example, emits "\\n\\n"). Anchoring at the token
+        immediately after the tag would capture the near-deterministic separator token
+        instead of the first answer token, which makes the answer-anchored KL collapse
+        to zero because both the base and modified models are almost certain to emit the
+        same newline. Returns `len(generated_ids)` when the answer is empty.
+        """
+        index = answer_start
+        while index < len(generated_ids):
+            if self.decode_tokens(generated_ids[index : index + 1]).strip():
+                break
+            index += 1
+        return index
+
     def _answer_token_ids_with_status(
         self, generated_ids: list[int]
     ) -> tuple[list[int], bool]:
@@ -1409,13 +1479,17 @@ class Model:
             # Reasoning never finished: no answer was produced.
             return [], True
 
-        return generated_ids[answer_start:][: self.settings.max_response_length], False
+        content_start = self._answer_content_start_index(generated_ids, answer_start)
+        return (
+            generated_ids[content_start:][: self.settings.max_response_length],
+            False,
+        )
 
     def _answer_token_ids(self, generated_ids: list[int]) -> list[int]:
         """
         Given the token IDs generated for a single prompt, return the token IDs of the
-        final answer only: everything after the first chain-of-thought closing tag,
-        truncated to max_response_length.
+        final answer only: everything after the first chain-of-thought closing tag and
+        the template's whitespace separator, truncated to max_response_length.
 
         If the model never closed its reasoning block (no closing tag found, e.g. the
         reasoning budget was exhausted mid-thought), the response is treated as a
@@ -1432,8 +1506,10 @@ class Model:
         """
         Split a generated sequence into the final answer token IDs and the token IDs up
         to the first answer token (the logit/residual capture position), plus an
-        "unfinished" flag. When the reasoning block never closed, the capture position
-        falls back to the end of the generation.
+        "unfinished" flag. The capture position skips the whitespace separator that chat
+        templates place between the closing tag and the answer, so it anchors at the
+        first token that carries answer content. When the reasoning block never closed,
+        the capture position falls back to the end of the generation.
         """
         answer_ids, unfinished = self._answer_token_ids_with_status(generated_ids)
 
@@ -1444,7 +1520,10 @@ class Model:
             if answer_start is None:
                 capture_ids = prompt_ids + generated_ids
             else:
-                capture_ids = prompt_ids + generated_ids[:answer_start]
+                content_start = self._answer_content_start_index(
+                    generated_ids, answer_start
+                )
+                capture_ids = prompt_ids + generated_ids[:content_start]
 
         return answer_ids, capture_ids, unfinished
 

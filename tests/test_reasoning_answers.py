@@ -11,21 +11,44 @@ from heretic.model import Model
 class FakeModel:
     """Minimal stand-in exercising Model._answer_token_ids without a real model."""
 
-    def __init__(self, tag_ids: list[list[int]], max_response_length: int) -> None:
+    def __init__(
+        self,
+        tag_ids: list[list[int]],
+        max_response_length: int,
+        token_text: dict[int, str] | None = None,
+    ) -> None:
         # Pre-populating the cache makes _reasoning_close_tag_ids() skip tokenization.
         self._cot_close_tag_ids_cache = tag_ids
         self.settings = SimpleNamespace(max_response_length=max_response_length)
+        self._token_text = token_text or {}
 
     def _reasoning_close_tag_ids(self) -> list[list[int]]:
         return self._cot_close_tag_ids_cache
 
+    def decode_tokens(self, ids: list[int]) -> str:
+        return "".join(self._token_text.get(i, f"<{i}>") for i in ids)
+
     def _answer_start_index(self, generated_ids: list[int]) -> int | None:
         return Model._answer_start_index(cast(Model, self), generated_ids)
+
+    def _answer_content_start_index(
+        self, generated_ids: list[int], answer_start: int
+    ) -> int:
+        return Model._answer_content_start_index(
+            cast(Model, self), generated_ids, answer_start
+        )
 
     def _answer_token_ids_with_status(
         self, generated_ids: list[int]
     ) -> tuple[list[int], bool]:
         return Model._answer_token_ids_with_status(cast(Model, self), generated_ids)
+
+    def _answer_and_capture_ids(
+        self, prompt_ids: list[int], generated_ids: list[int]
+    ) -> tuple[list[int], list[int], bool]:
+        return Model._answer_and_capture_ids(
+            cast(Model, self), prompt_ids, generated_ids
+        )
 
 
 class ReasoningAnswerTests(unittest.TestCase):
@@ -73,6 +96,32 @@ class ReasoningAnswerTests(unittest.TestCase):
         model = cast(Model, FakeModel([], 100))
         ids, unfinished = Model._answer_token_ids_with_status(model, [1, 2, 3])
         self.assertEqual(ids, [1, 2, 3])
+        self.assertFalse(unfinished)
+
+    def test_skips_whitespace_separator_before_answer(self) -> None:
+        # Qwen3 emits "\n\n" between the closing tag and the answer.
+        model = cast(Model, FakeModel([[99]], 100, token_text={200: "\n"}))
+        ids, unfinished = Model._answer_token_ids_with_status(
+            model, [10, 99, 200, 200, 20, 21]
+        )
+        self.assertEqual(ids, [20, 21])
+        self.assertFalse(unfinished)
+
+    def test_capture_position_skips_whitespace_separator(self) -> None:
+        model = cast(Model, FakeModel([[99]], 100, token_text={200: "\n"}))
+        answer_ids, capture_ids, unfinished = Model._answer_and_capture_ids(
+            model, [5, 6], [10, 99, 200, 200, 20, 21]
+        )
+        self.assertEqual(answer_ids, [20, 21])
+        # The anchor is the last separator token, so the captured distribution predicts
+        # the first answer token instead of the newline.
+        self.assertEqual(capture_ids, [5, 6, 10, 99, 200, 200])
+        self.assertFalse(unfinished)
+
+    def test_whitespace_only_answer_is_empty(self) -> None:
+        model = cast(Model, FakeModel([[99]], 100, token_text={200: "\n"}))
+        ids, unfinished = Model._answer_token_ids_with_status(model, [10, 99, 200, 200])
+        self.assertEqual(ids, [])
         self.assertFalse(unfinished)
 
     def test_answer_start_index_finds_position_after_tag(self) -> None:

@@ -48,7 +48,7 @@ class TinyModelShim:
         return torch.device("cpu")
 
     def decode_tokens(self, ids: list[int]) -> str:
-        return "".join(self._token_text.get(i, "") for i in ids)
+        return "".join(self._token_text.get(i, f"<{i}>") for i in ids)
 
 
 def make_capture(
@@ -94,7 +94,12 @@ class CapturePositionTests(unittest.TestCase):
         capture.observe(torch.tensor([[7, 5, 9]]), scores_row(2.0))
         self.assertEqual(capture.answer_positions, {})
 
+        # The closing tag completes here; the capture waits for the first
+        # content-bearing token so it can anchor past a whitespace separator.
         capture.observe(torch.tensor([[7, 5, 9, 10]]), scores_row(3.0))
+        self.assertEqual(capture.answer_positions, {})
+
+        capture.observe(torch.tensor([[7, 5, 9, 10, 11]]), scores_row(4.0))
         self.assertEqual(capture.answer_positions, {0: 3})
         self.assertTrue(torch.equal(capture.answer_logits[0], expected_row(3.0)))
 
@@ -102,9 +107,67 @@ class CapturePositionTests(unittest.TestCase):
         capture = make_capture(self.shim)
         capture.observe(torch.tensor([[7, 5]]), scores_row(1.0))
         # A later step must not change the content capture (position stays 1, value 1.0).
+        capture.observe(torch.tensor([[7, 5, 9, 10]]), scores_row(8.0))
         capture.observe(torch.tensor([[7, 5, 9, 10, 11]]), scores_row(9.0))
         self.assertEqual(capture.content_positions, {0: 1})
         self.assertTrue(torch.equal(capture.content_logits[0], expected_row(1.0)))
+        self.assertEqual(capture.answer_positions, {0: 3})
+        self.assertTrue(torch.equal(capture.answer_logits[0], expected_row(8.0)))
+
+    def test_skips_whitespace_separator_before_answer(self) -> None:
+        # Qwen3-style separator: the tokens after the closing tag are newlines.
+        shim = TinyModelShim(
+            close_tag_ids=[[9]],
+            markers=[],
+            token_text={198: "\n", 4: "hello"},
+        )
+        capture = make_capture(shim)
+
+        capture.observe(torch.tensor([[7, 5, 9]]), scores_row(1.0))
+        capture.observe(torch.tensor([[7, 5, 9, 198]]), scores_row(2.0))
+        capture.observe(torch.tensor([[7, 5, 9, 198, 198]]), scores_row(3.0))
+        self.assertEqual(capture.answer_positions, {})
+
+        capture.observe(torch.tensor([[7, 5, 9, 198, 198, 4]]), scores_row(4.0))
+        self.assertEqual(capture.answer_positions, {0: 4})
+        # The captured distribution is the one that predicted "hello".
+        self.assertTrue(torch.equal(capture.answer_logits[0], expected_row(3.0)))
+
+    def test_answer_module_io_uses_previous_step(self) -> None:
+        shim = TinyModelShim(close_tag_ids=[[9]], markers=[], layer_count=1)
+        capture = _GenerationCapture(
+            model=cast(Model, shim),
+            prompt_length=1,
+            prompt_ids=[[7]],
+            capture_logits=True,
+            capture_module_io=True,
+        )
+        capture._expected_io_count = 1
+
+        def make_io(value: float) -> dict[int, dict[str, dict[int, Any]]]:
+            return {
+                0: {
+                    "proj": {
+                        0: (
+                            torch.full((1, 2), value),
+                            torch.full((1, 2), value),
+                        )
+                    }
+                }
+            }
+
+        # The closing tag completes here, so this step's I/O ends at the tag token.
+        capture._io = make_io(1.0)
+        capture.observe(torch.tensor([[7, 5, 9]]), scores_row(1.0))
+
+        # A content token appears; the answer must use the previous step's I/O.
+        capture._io = make_io(9.0)
+        capture.observe(torch.tensor([[7, 5, 9, 4]]), scores_row(2.0))
+
+        self.assertEqual(capture.answer_positions, {0: 2})
+        input, output = capture.module_io_rows[0][0]["proj"][0]
+        self.assertTrue(torch.equal(input, torch.full((1, 2), 1.0)))
+        self.assertTrue(torch.equal(output, torch.full((1, 2), 1.0)))
 
     def test_unfinished_row_is_not_captured(self) -> None:
         capture = make_capture(self.shim)
@@ -130,6 +193,10 @@ class CapturePositionTests(unittest.TestCase):
         capture.observe(
             torch.tensor([[7, 5, 9, 10], [7, 5, 1, 1]]), torch.full((2, 3), 2.0)
         )
+        capture.observe(
+            torch.tensor([[7, 5, 9, 10, 11], [7, 5, 1, 1, 1]]),
+            torch.full((2, 3), 3.0),
+        )
         self.assertEqual(capture.answer_positions, {0: 3})
         self.assertTrue(torch.equal(capture.answer_logits[0], expected_row(2.0)))
         self.assertNotIn(1, capture.answer_logits)
@@ -152,6 +219,7 @@ class CapturePositionTests(unittest.TestCase):
         )
         capture._expected_io_count = 1
         capture.observe(torch.tensor([[7, 5, 9]]), scores_row(1.0))
+        capture.observe(torch.tensor([[7, 5, 9, 13]]), scores_row(2.0))
         self.assertEqual(capture.answer_positions, {0: 2})
         self.assertNotIn(0, capture.module_io_rows)
 
